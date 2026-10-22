@@ -143,3 +143,19 @@ func textScore(query: String, value: JSONObject) -> Double {
 func ordinalEqual(_ a: String, _ b: String) -> Bool {
     a.utf16.elementsEqual(b.utf16)
 }
+
+/// A dictionary or set key that hashes and compares a string by UTF-16 code units. `String` keys merge
+/// canonically equivalent strings, which JavaScript keeps apart.
+struct OrdinalKey: Hashable, Sendable {
+    let string: String
+    init(_ string: String) { self.string = string }
+    static func == (a: OrdinalKey, b: OrdinalKey) -> Bool { ordinalEqual(a.string, b.string) }
+    func hash(into hasher: inout Hasher) {
+        for unit in string.utf16 { hasher.combine(unit) }
+    }
+}
+
+/// Ordinal order, by UTF-16 code units, as JavaScript's `<` on strings.
+func ordinalLess(_ a: String, _ b: String) -> Bool {
+    a.utf16.lexicographicallyPrecedes(b.utf16)
+}

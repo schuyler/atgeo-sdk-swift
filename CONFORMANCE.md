@@ -8,8 +8,9 @@ The fixtures are vendored at the commit named in `Tests/AtgeoTests/Fixtures/SOUR
 
 ## JSON parsing
 
-Responses are parsed with `JSONDecoder` into `JSONValue`. Entries below are with `JSONDecoder`;
-measured on Linux (Swift 6.4.1); re-measured on macOS in step 4.
+Responses are parsed with `JSONDecoder` into `JSONValue`. Entries below are with `JSONDecoder`, and
+`ToleranceTests` asserts each one on every CI platform: Linux (Swift 6.4.1), current macOS, and macOS 14,
+whose Foundation predates the 2024 rewrite and is what iOS 15-17 and macOS 12-14 run. All three agree.
 
 | Input | This port | Reference (`JSON.parse`) |
 |---|---|---|
