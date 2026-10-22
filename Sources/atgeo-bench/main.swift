@@ -158,9 +158,10 @@ private func releaseFreeMemory() {
 
 private func mib(_ bytes: Int) -> String { String(format: "%.1f", Double(bytes) / 1_048_576) }
 
-func measureCache() async {
+/// One row of the cache table: the default budget filled by `fillSearches` searches of 8 tiles each.
+func measureCacheRow(memoize: Bool) async -> String {
     let bodyBytes = tileBodies.map(\.count).reduce(0, +)
-    let client = AtgeoClient(server: URL(string: "https://bench.example")!, transport: BenchTransport())
+    let client = AtgeoClient(server: URL(string: "https://bench.example")!, transport: BenchTransport(), memoize: memoize)
     releaseFreeMemory()
     let before = residentBytes()
     for i in 0..<fillSearches {
@@ -169,15 +170,37 @@ func measureCache() async {
     let grown = residentBytes() - before
     releaseFreeMemory()
     let live = residentBytes() - before
+    withExtendedLifetime(client) {}
     // Every tile body is the same size to within a few bytes, so the cache holds the budget's worth of them.
     let tileSize = bodyBytes / fillTiles
     let cached = AtgeoClient.defaultCacheBudgetBytes / tileSize * tileSize
     let ratio = { (bytes: Int) in String(format: "%.2f", Double(bytes) / Double(cached)) }
-    print("Tile cache, default budget full after \(fillSearches) searches of 8 tiles (\(fillTiles) tiles, \(mib(bodyBytes)) MiB of bodies)\n")
-    print("| Bodies cached, MiB | Resident growth, MiB | Ratio | After releasing free memory, MiB | Ratio |")
-    print("|---:|---:|---:|---:|---:|")
-    print("| \(mib(cached)) | \(mib(grown)) | \(ratio(grown)) | \(mib(live)) | \(ratio(live)) |\n")
-    withExtendedLifetime(client) {}
+    let what = memoize ? "Bodies, keys and the latest search's tiles parsed" : "Bodies and keys (memo off)"
+    return "| \(what) | \(mib(cached)) | \(mib(grown)) | \(ratio(grown)) | \(mib(live)) | \(ratio(live)) |"
+}
+
+/// Each row is measured in a process of its own where the platform can start one: memory a measurement frees
+/// but the allocator keeps would otherwise be reused by the next and hidden from it.
+func measureCache() async {
+    print("Tile cache, default budget full after \(fillSearches) searches of 8 tiles (\(fillTiles) tiles of \(tileBodies[0].count / 1024) KiB)\n")
+    print("| Holding | Bodies cached, MiB | Resident growth, MiB | Ratio | After releasing free memory, MiB | Ratio |")
+    print("|---|---:|---:|---:|---:|---:|")
+    #if os(macOS) || os(Linux)
+    for mode in ["bodies", "memo"] {
+        let process = Process()
+        process.executableURL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        process.arguments = ["--measure-cache", mode]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        try! process.run()
+        let output = pipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        print(String(decoding: output, as: UTF8.self), terminator: "")
+    }
+    #else
+    print(await measureCacheRow(memoize: false))
+    #endif
+    print()
 }
 
 /// A search with text over a warm region of `warmTiles` tiles, as a user types: no requests, so the time is
@@ -206,6 +229,10 @@ func timeWarmSearch() async {
 }
 
 // First, before anything else has grown the heap, so the resident-memory deltas are the cache's.
+if CommandLine.arguments.dropFirst().first == "--measure-cache" {
+    print(await measureCacheRow(memoize: CommandLine.arguments.dropFirst(2).first == "memo"))
+    exit(0)
+}
 await measureCache()
 
 var bodies: [(name: String, data: Data)] = [

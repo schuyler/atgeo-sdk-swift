@@ -142,23 +142,31 @@ private func scoreName(_ query: [UInt16], _ tokens: [[UInt16]], _ name: [UInt16]
     return 0.5 * jaroWinkler(query, name) + 0.5 * (sum / Double(tokens.count))
 }
 
-/// The best score of the place's name and variant names against a normalized, non-empty query.
-func textScore(query: String, value: JSONObject) -> Double {
-    let q = Array(query.utf16)
-    let tokens = Array(words(q).prefix(maxQueryTokens))
+/// The place's name and variant names, normalized, as UTF-16, in that order; empty ones are dropped. A tile's
+/// records get these once, when it is parsed, rather than on every search.
+func normalizedNames(_ value: JSONObject) -> [[UInt16]] {
     var raw: [String] = []
     if let name = value["name"]?.stringValue { raw.append(name) }
     for variant in value["variants"]?.arrayValue ?? [] {
         // A variant that is not an object, `null` included (contract §16), or has no string name is skipped.
         if let name = variant["name"]?.stringValue { raw.append(name) }
     }
+    return raw.map { Array(normalize($0).utf16) }.filter { !$0.isEmpty }
+}
+
+/// The best score of the place's normalized names against a normalized, non-empty query.
+func textScore(query: String, names: [[UInt16]]) -> Double {
+    let q = Array(query.utf16)
+    let tokens = Array(words(q).prefix(maxQueryTokens))
     var best = 0.0
-    for name in raw {
-        let n = normalize(name)
-        if n.isEmpty { continue }
-        best = max(best, scoreName(q, tokens, Array(n.utf16)))
+    for name in names {
+        best = max(best, scoreName(q, tokens, name))
     }
     return best
+}
+
+func textScore(query: String, value: JSONObject) -> Double {
+    textScore(query: query, names: normalizedNames(value))
 }
 
 /// Ordinal equality, as JavaScript's `===` on strings. `String ==` is canonical equivalence, under which

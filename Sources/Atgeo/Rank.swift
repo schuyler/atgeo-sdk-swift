@@ -44,10 +44,15 @@ private let byOrigin: Comparator = { a, b in
 /// Builds the hits for records that passed the region filter, drops those scoring below the threshold,
 /// and sorts them. `query` is already normalized; "" means no text.
 func rank(_ records: [TileRecord], region: Region, query: String, sort: SortMode) -> [SearchHit] {
+    rank(records.map(PreparedRecord.init), region: region, query: query, sort: sort)
+}
+
+func rank(_ records: [PreparedRecord], region: Region, query: String, sort: SortMode) -> [SearchHit] {
     let middle = center(region)
     var ranked: [Ranked] = []
-    for record in records {
-        let score = query.isEmpty ? nil : textScore(query: query, value: record.value)
+    for prepared in records {
+        let record = prepared.record
+        let score = query.isEmpty ? nil : textScore(query: query, names: prepared.names)
         if let score, score < scoreThreshold { continue }
         let locations = locate(record.value)
         // The region filter already required a location, so there is always a distance.
