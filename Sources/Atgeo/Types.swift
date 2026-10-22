@@ -11,20 +11,77 @@ public enum SortMode: String, Sendable, CaseIterable, Codable { case fused, dist
 
 public struct SearchResult: Sendable, Equatable, Codable {
     public var places: [SearchHit]
+    /// `tiles.failed == 0`.
     public var complete: Bool
     public var overview: Bool
     public var tiles: TileCounts
+    /// Each tile that failed, in tile URL order (contract §4.4); `tiles.failed` is its count.
+    public var tileFailures: [TileFailure]
     public struct TileCounts: Sendable, Equatable, Codable {
         public var fetched: Int
         public var failed: Int
         public init(fetched: Int, failed: Int) { self.fetched = fetched; self.failed = failed }
     }
 
-    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts) {
+    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts, tileFailures: [TileFailure] = []) {
         self.places = places
         self.complete = complete
         self.overview = overview
         self.tiles = tiles
+        self.tileFailures = tileFailures
+    }
+
+    private enum CodingKeys: String, CodingKey { case places, complete, overview, tiles, tileFailures }
+
+    /// Written by hand so that a result encoded before `tileFailures` existed still decodes, with none.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        places = try c.decode([SearchHit].self, forKey: .places)
+        complete = try c.decode(Bool.self, forKey: .complete)
+        overview = try c.decode(Bool.self, forKey: .overview)
+        tiles = try c.decode(TileCounts.self, forKey: .tiles)
+        tileFailures = try c.decodeIfPresent([TileFailure].self, forKey: .tileFailures) ?? []
+    }
+}
+
+/// A tile that failed in a search (contract §4.4). `url`, `kind` and `status` are the same in every atgeo SDK;
+/// `error` is this port's own and is left out of `==` and of coding.
+public struct TileFailure: Sendable, Equatable, Codable {
+    /// Where the failure arose.
+    public enum Kind: String, Sendable, Codable {
+        /// The URL is not an absolute `http` or `https` URL, or carries credentials; no request was made.
+        case refused
+        /// The server answered non-2xx.
+        case status
+        /// The server answered 2xx with a body that is not a usable tile payload.
+        case decode
+        /// The transport threw: a network error, a timeout, a body over its cap, or anything an app's
+        /// transport throws.
+        case transport
+    }
+
+    /// The tile URL as the tile list gave it.
+    public var url: String
+    public var kind: Kind
+    /// The HTTP status for `.status`, else nil.
+    public var status: Int?
+    /// What failed: `URLError(.unsupportedURL)` for `.refused`, the `AtgeoError` for `.status`, the parse error
+    /// for `.decode`, and the transport's own error for `.transport`. The client always sets it; it is nil only
+    /// in a failure decoded from JSON, since an error does not encode, or one built with nil.
+    public var error: (any Error)?
+
+    public init(url: String, kind: Kind, status: Int? = nil, error: (any Error)?) {
+        self.url = url
+        self.kind = kind
+        self.status = status
+        self.error = error
+    }
+
+    private enum CodingKeys: String, CodingKey { case url, kind, status }
+
+    /// Compares `url` (by UTF-16 code units, as the contract compares strings), `kind` and `status`; not `error`.
+    public static func == (a: TileFailure, b: TileFailure) -> Bool {
+        ordinalEqual(a.url, b.url) && a.kind == b.kind && a.status == b.status
     }
 }
 

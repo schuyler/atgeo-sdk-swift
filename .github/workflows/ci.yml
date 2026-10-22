@@ -12,12 +12,13 @@ jobs:
     container: swift:6.4-noble
     steps:
       - uses: actions/checkout@v5
-      - name: Sources import only Foundation and FoundationNetworking
+      # os is for the debug log of failed tiles, behind canImport(os), on Apple platforms only.
+      - name: Sources import only Foundation, FoundationNetworking and os
         run: |
           modules=$(grep -rhE '^[[:space:]]*(@[A-Za-z_]+(\([^)]*\))?[[:space:]]+)*import[[:space:]]' Sources \
             | sed -E 's/^.*import[[:space:]]+([a-z]+[[:space:]]+)?([A-Za-z_]+).*$/\2/' | sort -u)
           echo "$modules"
-          bad=$(echo "$modules" | grep -vxE 'Foundation|FoundationNetworking|Atgeo' || true)
+          bad=$(echo "$modules" | grep -vxE 'Foundation|FoundationNetworking|os|Atgeo' || true)
           if [ -n "$bad" ]; then echo "unexpected imports: $bad"; exit 1; fi
       - run: swift --version
       - run: swift build

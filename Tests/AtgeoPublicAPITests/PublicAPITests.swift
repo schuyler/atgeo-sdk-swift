@@ -14,6 +14,13 @@ import Atgeo  // not @testable: everything here must be reachable from an app
     @Test func everyResultTypeCanBeBuiltOutsideTheModule() {
         let result = SearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0))
         #expect(result.places.first?.origin == hit.origin)
+        #expect(result.tileFailures.isEmpty)
+        let failure = TileFailure(url: "https://tiles.example/0.json", kind: .status, status: 503,
+                                  error: AtgeoError(code: "HttpError", message: "HTTP 503", status: 503))
+        let partial = SearchResult(places: [], complete: false, overview: false, tiles: .init(fetched: 0, failed: 1),
+                                   tileFailures: [failure])
+        #expect(partial.tileFailures == [TileFailure(url: "https://tiles.example/0.json", kind: .status, status: 503, error: nil)])
+        #expect(TileFailure.Kind(rawValue: "refused") == .refused && TileFailure.Kind.transport.rawValue == "transport")
         #expect(PlaceRecord(origin: "o", place: [:], importance: nil).origin == "o")
 
         let service = ServiceDescription(
@@ -32,9 +39,12 @@ import Atgeo  // not @testable: everything here must be reachable from an app
     }
 
     @Test func resultsRoundTripThroughJSON() throws {
-        let result = SearchResult(places: [hit], complete: false, overview: true, tiles: .init(fetched: 2, failed: 1))
+        let result = SearchResult(places: [hit], complete: false, overview: true, tiles: .init(fetched: 2, failed: 1),
+                                  tileFailures: [TileFailure(url: "https://t/1.json", kind: .decode, error: CocoaError(.coderReadCorrupt))])
         let data = try JSONEncoder().encode(result)
-        #expect(try JSONDecoder().decode(SearchResult.self, from: data) == result)
+        let decoded = try JSONDecoder().decode(SearchResult.self, from: data)
+        #expect(decoded == result)
+        #expect(decoded.tileFailures.first?.error == nil)
 
         let record = PlaceRecord(origin: "o", place: ["name": .string("x"), "n": .null], importance: nil)
         #expect(try JSONDecoder().decode(PlaceRecord.self, from: JSONEncoder().encode(record)) == record)
@@ -74,5 +84,24 @@ import Atgeo  // not @testable: everything here must be reachable from an app
         let client = AtgeoClient(transport: Canned())
         let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), text: "here")
         #expect(result.places.map(\.origin) == ["urn:atgeo:overturemaps.org:place:1"])
+        #expect(result.complete && result.tileFailures.isEmpty)
+    }
+
+    @Test func aSearchReportsItsFailedTiles() async throws {
+        struct Failing: HTTPTransport {
+            func get(_ url: URL) async throws -> HTTPResponse {
+                if url.path.hasSuffix("/org.atgeo.getTiles") {
+                    return HTTPResponse(status: 200, body: Data(#"{"tiles":["https://tiles.example/1.json","https://tiles.example/0.json","file:///x"]}"#.utf8))
+                }
+                if url.path == "/0.json" { throw URLError(.timedOut) }
+                return HTTPResponse(status: 404, body: Data())
+            }
+        }
+        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10))
+        #expect(result.tileFailures.map(\.url) == ["file:///x", "https://tiles.example/0.json", "https://tiles.example/1.json"])
+        #expect(result.tileFailures.map(\.kind) == [.refused, .transport, .status])
+        #expect(result.tileFailures.map(\.status) == [nil, nil, 404])
+        #expect((result.tileFailures[1].error as? URLError)?.code == .timedOut)
+        #expect(result.tiles.failed == 3 && !result.complete)
     }
 }
