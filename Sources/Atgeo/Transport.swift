@@ -64,18 +64,26 @@ public struct URLSessionTransport: HTTPTransport {
         // The delegate's cancel can land after the last byte has arrived, so the body is checked too.
         if limit.exceeded || body.count > maxBodyBytes { throw tooLarge }
         #else
-        // Apple platforms do not pass the body to data(for:delegate:)'s delegate, so the body is streamed.
-        let (bytes, response) = try await session.bytes(for: request)
-        var buffer: [UInt8] = []
-        buffer.reserveCapacity(Int(min(max(response.expectedContentLength, 0), Int64(maxBodyBytes))))
-        for try await byte in bytes {
-            if buffer.count == maxBodyBytes {
-                bytes.task.cancel()
-                throw tooLarge
+        // Apple platforms do not pass the body to data(for:delegate:)'s delegate, and reading bytes(for:) a byte
+        // at a time costs several times as long (CI, 2 MiB over loopback: 8 to 13 ms against 3 to 5). So a plain
+        // data task carries a task delegate that collects the body in the chunks URLSession delivers.
+        let collector = BodyCollector(maxBodyBytes)
+        let task = session.dataTask(with: request)
+        task.delegate = collector
+        let body: Data
+        do {
+            body = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    collector.start(continuation)
+                    task.resume()
+                }
+            } onCancel: {
+                task.cancel()
             }
-            buffer.append(byte)
+        } catch where collector.exceeded {
+            throw tooLarge
         }
-        let body = Data(buffer)
+        let response = task.response
         #endif
         return HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: body)
     }
@@ -103,6 +111,49 @@ private final class BodyLimit: NSObject, URLSessionDataDelegate, @unchecked Send
             return false
         }
         if cancel { dataTask.cancel() }
+    }
+}
+#else
+/// Collects a data task's body as URLSession delivers it, decoded, and cancels the task once it passes the
+/// limit, so that an oversized body is not read to the end. A task delegate, so that it works on a session the
+/// app supplies.
+private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var body = Data()
+    private var over = false
+    private var continuation: CheckedContinuation<Data, any Error>?
+
+    init(_ limit: Int) { self.limit = limit }
+
+    var exceeded: Bool { lock.withLock { over } }
+
+    func start(_ continuation: CheckedContinuation<Data, any Error>) {
+        lock.withLock { self.continuation = continuation }
+    }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let cancel = lock.withLock { () -> Bool in
+            if over { return false }
+            if body.count + data.count > limit {
+                over = true
+                body = Data()
+                return true
+            }
+            body.append(data)
+            return false
+        }
+        if cancel { dataTask.cancel() }
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
+        let (continuation, result) = lock.withLock { () -> (CheckedContinuation<Data, any Error>?, Result<Data, any Error>) in
+            defer { self.continuation = nil }
+            if over { return (self.continuation, .failure(URLError(.dataLengthExceedsMaximum))) }
+            if let error { return (self.continuation, .failure(error)) }
+            return (self.continuation, .success(body))
+        }
+        continuation?.resume(with: result)
     }
 }
 #endif
