@@ -96,6 +96,25 @@ private func nested(_ depth: Int) -> String { String(repeating: "[", count: dept
         #expect(throws: DecodingError.self) { try parse(nested(100_000)) }
     }
 
+    // The parser is iterative, so even the deepest document it accepts needs little stack. A recursive one
+    // overflowed the 512 KiB Darwin gives secondary threads, in a debug build, before depth 512. The value
+    // comes back to be freed here, since releasing a deep JSONValue recurses whoever parsed it.
+    @Test func deepNestingParsesOnASmallStack() async {
+        let text = String(repeating: #"{"a":["#, count: 256) + "1" + String(repeating: "]}", count: 256)
+        let value: JSONValue? = await withCheckedContinuation { continuation in
+            let thread = Thread { continuation.resume(returning: try? parseJSON(Data(text.utf8))) }
+            thread.stackSize = 64 * 1024
+            thread.start()
+        }
+        var depth = 0
+        var v = value
+        while let next = v?["a"]?[0] {
+            depth += 2
+            v = next
+        }
+        #expect(depth == 512 && v == .number(1))
+    }
+
     @Test func errorsNameTheByte() {
         do {
             _ = try parse("[1,]")

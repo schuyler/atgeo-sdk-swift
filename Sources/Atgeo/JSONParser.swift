@@ -23,7 +23,6 @@ private struct JSONParser {
 
     let bytes: UnsafeBufferPointer<UInt8>
     var i = 0
-    var depth = 0
 
     init(bytes: UnsafeBufferPointer<UInt8>) { self.bytes = bytes }
 
@@ -51,17 +50,78 @@ private struct JSONParser {
         }
     }
 
+    /// Iterative, not recursive: open arrays and objects are kept on stacks of their own, so stack use is the
+    /// same at any depth. Tiles are parsed off the main thread, and Darwin gives secondary threads 512 KiB of
+    /// stack by default; a recursive parser in a debug build overflowed that before depth 512. Each open container is
+    /// mutated in place through its stack's subscript, so appending never copies it.
     mutating func value() throws -> JSONValue {
-        guard !atEnd else { throw error("unexpected end of input") }
-        switch bytes[i] {
-        case UInt8(ascii: "{"): return .object(try object())
-        case UInt8(ascii: "["): return .array(try array())
-        case quote: return .string(try string())
-        case UInt8(ascii: "t"): try literal("true"); return .bool(true)
-        case UInt8(ascii: "f"): try literal("false"); return .bool(false)
-        case UInt8(ascii: "n"): try literal("null"); return .null
-        case minus, zero...UInt8(ascii: "9"): return .number(try number())
-        default: throw error("unexpected character")
+        var isArray: [Bool] = []
+        var arrays: [[JSONValue]] = []
+        var objects: [JSONObject] = []
+        var keys: [String] = []
+        while true {
+            var v: JSONValue
+            guard !atEnd else { throw error("unexpected end of input") }
+            switch bytes[i] {
+            case UInt8(ascii: "{"):
+                try open(depth: isArray.count)
+                if !atEnd, bytes[i] == UInt8(ascii: "}") {
+                    i += 1
+                    v = .object([:])
+                } else {
+                    keys.append(try key())
+                    objects.append([:])
+                    isArray.append(false)
+                    continue
+                }
+            case UInt8(ascii: "["):
+                try open(depth: isArray.count)
+                if !atEnd, bytes[i] == UInt8(ascii: "]") {
+                    i += 1
+                    v = .array([])
+                } else {
+                    arrays.append([])
+                    isArray.append(true)
+                    continue
+                }
+            case quote: v = .string(try string())
+            case UInt8(ascii: "t"): try literal("true"); v = .bool(true)
+            case UInt8(ascii: "f"): try literal("false"); v = .bool(false)
+            case UInt8(ascii: "n"): try literal("null"); v = .null
+            case minus, zero...UInt8(ascii: "9"): v = .number(try number())
+            default: throw error("unexpected character")
+            }
+            // `v` is complete: add it to the innermost container, and close each container that ends here.
+            while let inArray = isArray.last {
+                skipWhitespace()
+                guard !atEnd else { throw error("unexpected end of input") }
+                let b = bytes[i]
+                if inArray {
+                    arrays[arrays.count - 1].append(v)
+                    if b == comma {
+                        i += 1
+                        skipWhitespace()
+                        break
+                    }
+                    guard b == UInt8(ascii: "]") else { throw error("expected ',' or ']'") }
+                    i += 1
+                    isArray.removeLast()
+                    v = .array(arrays.removeLast())
+                } else {
+                    objects[objects.count - 1][keys.removeLast()] = v  // a later duplicate wins, as in JSON.parse
+                    if b == comma {
+                        i += 1
+                        skipWhitespace()
+                        keys.append(try key())
+                        break
+                    }
+                    guard b == UInt8(ascii: "}") else { throw error("expected ',' or '}'") }
+                    i += 1
+                    isArray.removeLast()
+                    v = .object(objects.removeLast())
+                }
+            }
+            if isArray.isEmpty { return v }
         }
     }
 
@@ -72,49 +132,22 @@ private struct JSONParser {
         i += n
     }
 
-    mutating func enter() throws {
-        depth += 1
-        guard depth <= Self.maxDepth else { throw error("nesting deeper than \(Self.maxDepth)") }
+    /// At `[` or `{`, opening a container inside `depth` others.
+    mutating func open(depth: Int) throws {
+        guard depth < Self.maxDepth else { throw error("nesting deeper than \(Self.maxDepth)") }
         i += 1
         skipWhitespace()
     }
 
-    mutating func object() throws -> JSONObject {
-        try enter()
-        defer { depth -= 1 }
-        var result = JSONObject()
-        if !atEnd, bytes[i] == UInt8(ascii: "}") { i += 1; return result }
-        while true {
-            guard !atEnd, bytes[i] == quote else { throw error("expected a string key") }
-            let key = try string()
-            skipWhitespace()
-            guard !atEnd, bytes[i] == colon else { throw error("expected ':'") }
-            i += 1
-            skipWhitespace()
-            result[key] = try value()  // a later duplicate replaces an earlier one, as in JSON.parse
-            skipWhitespace()
-            guard !atEnd else { throw error("unexpected end of input") }
-            if bytes[i] == UInt8(ascii: "}") { i += 1; return result }
-            guard bytes[i] == comma else { throw error("expected ',' or '}'") }
-            i += 1
-            skipWhitespace()
-        }
-    }
-
-    mutating func array() throws -> [JSONValue] {
-        try enter()
-        defer { depth -= 1 }
-        var result: [JSONValue] = []
-        if !atEnd, bytes[i] == UInt8(ascii: "]") { i += 1; return result }
-        while true {
-            result.append(try value())
-            skipWhitespace()
-            guard !atEnd else { throw error("unexpected end of input") }
-            if bytes[i] == UInt8(ascii: "]") { i += 1; return result }
-            guard bytes[i] == comma else { throw error("expected ',' or ']'") }
-            i += 1
-            skipWhitespace()
-        }
+    /// An object key and its colon, leaving `i` at the value.
+    mutating func key() throws -> String {
+        guard !atEnd, bytes[i] == quote else { throw error("expected a string key") }
+        let k = try string()
+        skipWhitespace()
+        guard !atEnd, bytes[i] == colon else { throw error("expected ':'") }
+        i += 1
+        skipWhitespace()
+        return k
     }
 
     /// At the opening quote. A string without escapes, most of a tile, is decoded straight from the input.
