@@ -217,14 +217,18 @@ func xrpcURL(base: String, nsid: String, _ params: [(name: String, value: String
 /// The tile URL is first trimmed as WHATWG URL parsing (the reference's `fetch`) trims it: leading and
 /// trailing C0 controls and spaces removed, tab, LF and CR dropped anywhere. Then it must be an absolute
 /// `http` or `https` URL with a host and no credentials, both as `isHTTPURL` reads the string and as
-/// `URL(string:)` parses it, so that no transport, the default or an app's, ever sees `file:` or a password.
+/// Foundation parses it, so that no transport, the default or an app's, ever sees `file:` or a password.
 /// The second reading matters where Foundation's parse differs from WHATWG's: Foundation on Linux reads
-/// `https://h\@x/y` as user `h\` at host `x`, where WHATWG reads host `h` and path `/@x/y`.
+/// `https://h\@x/y` as user `h\` at host `x`, where WHATWG reads host `h` and path `/@x/y`. The userinfo is
+/// checked percent-encoded, since `URL.user` is nil for one that does not decode (`h%5C%FF`).
 func tileRequestURL(_ tile: String) -> URL? {
     let trimmed = trimmedLikeWHATWG(tile)
     guard isHTTPURL(trimmed), let url = URL(string: trimmed),
-          let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
-          let host = url.host, !host.isEmpty, url.user == nil, url.password == nil
+          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = components.percentEncodedHost, !host.isEmpty,
+          components.percentEncodedUser == nil, components.percentEncodedPassword == nil,
+          url.user == nil, url.password == nil
     else { return nil }
     return url
 }
@@ -250,20 +254,41 @@ func trimmedLikeWHATWG(_ s: String) -> String {
 
 /// An absolute `http` or `https` URL (scheme in any case) with a non-empty host and no credentials, read as
 /// the Rust and Python ports read it. The authority ends at `/`, `\`, `?` or `#`, as a special URL's does in
-/// WHATWG. Any `@` in it is refused, an empty userinfo (`https://@h/x`) included, which `fetch` would drop
-/// and fetch (CONFORMANCE.md); FoundationNetworking would send it as `Authorization: Basic Og==`.
+/// WHATWG. Any `@` before the first `/`, `?` or `#` is refused, a backslash notwithstanding, since Foundation
+/// does not end the authority at a backslash and would read what precedes the `@` as a userinfo; so is an empty
+/// userinfo (`https://@h/x`), which `fetch` would drop and fetch (CONFORMANCE.md). The host holds no `%`, a
+/// bracketed host only hex digits, `:` and `.`, and a port is at most 65535, as WHATWG requires.
 func isHTTPURL(_ url: String) -> Bool {
     let bytes = Array(url.utf8)
     let separator = Array("://".utf8)
     guard let end = bytes.indices.first(where: { bytes[$0...].starts(with: separator) }) else { return false }
     let scheme = bytes[..<end].map { (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains($0) ? $0 | 0x20 : $0 }
     guard scheme == Array("http".utf8) || scheme == Array("https".utf8) else { return false }
-    let authority = bytes[(end + separator.count)...].prefix { !"/\\?#".utf8.contains($0) }
-    if authority.contains(UInt8(ascii: "@")) { return false }
-    let host = authority.first == UInt8(ascii: "[")
-        ? authority.dropFirst().prefix { $0 != UInt8(ascii: "]") }
-        : authority.prefix { $0 != UInt8(ascii: ":") }
-    return !host.isEmpty
+    let rest = bytes[(end + separator.count)...]
+    if rest.prefix(while: { !"/?#".utf8.contains($0) }).contains(UInt8(ascii: "@")) { return false }
+    let authority = rest.prefix { !"/\\?#".utf8.contains($0) }
+    let host: ArraySlice<UInt8>
+    let afterHost: ArraySlice<UInt8>
+    if authority.first == UInt8(ascii: "[") {
+        guard let close = authority.firstIndex(of: UInt8(ascii: "]")) else { return false }
+        host = authority[(authority.startIndex + 1)..<close]
+        guard host.allSatisfy({ isHexDigit($0) || $0 == UInt8(ascii: ":") || $0 == UInt8(ascii: ".") }) else { return false }
+        afterHost = authority[(close + 1)...]
+    } else {
+        host = authority.prefix { $0 != UInt8(ascii: ":") }
+        afterHost = authority[host.endIndex...]
+    }
+    guard !host.isEmpty, !host.contains(UInt8(ascii: "%")) else { return false }
+    if afterHost.isEmpty { return true }
+    guard afterHost.first == UInt8(ascii: ":") else { return false }
+    let port = afterHost.dropFirst()
+    guard port.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }) else { return false }
+    let value = port.drop { $0 == UInt8(ascii: "0") }
+    return value.count < 5 || (value.count == 5 && Array(value).lexicographicallyPrecedes(Array("65536".utf8)))
+}
+
+private func isHexDigit(_ b: UInt8) -> Bool {
+    (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(b) || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(b | 0x20)
 }
 
 /// Fetches a URL exactly as given and returns the body. The body is read before the status is checked, so

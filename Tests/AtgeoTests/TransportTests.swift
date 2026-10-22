@@ -164,12 +164,17 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("reads http and https URLs as the Rust and Python ports do")
     func classifies() {
         for ok in ["https://h", "HTTP://h/x", "hTtPs://h/x", "http://h:80/x@y", "http://[::1]:8000/x", "https://h?q",
-                   "https://h#f", "https://h\\@x/y"] {
+                   "https://h#f", "http://h:65535/x", "http://h:/x", "http://h:00080/x", "http://[::ffff:1.2.3.4]/x",
+                   "https://h\\x/y", "https://h/x\\y@z"] {
             #expect(isHTTPURL(ok), "\(ok)")
         }
         for bad in ["", "h/x", "/x", "x.json", "ftp://h/x", "file:///etc/passwd", "https:///x", "https://", "http://u@/x",
                     "https:h", "http://[]/x", "http://:80/x", "javascript://h/x", "httpx://h/x", " https://h/x",
-                    "http://u:p@h:80/x", "https://u@h/x", "https://:p@h", "https://@h/x", "https://u:p@[::1]/x"] {
+                    "http://u:p@h:80/x", "https://u@h/x", "https://:p@h", "https://@h/x", "https://u:p@[::1]/x",
+                    // Foundation does not end the authority at a backslash, so an @ after one is a userinfo there.
+                    "https://h\\@x/y", "https://h\\%FF@x/y", "https://h\\x@y/z",
+                    "https:/h/x", "https:\\\\h\\x", "http://h:65536/x", "http://h:99999/x", "http://h:8a/x", "http://h:-1/x",
+                    "http://h%41/x", "http://h%00/x", "http://[zz]/x", "http://[::1/x", "http://[::1]x/y"] {
             #expect(!isHTTPURL(bad), "\(bad)")
         }
     }
@@ -188,6 +193,10 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         "HTTPS://user:pw@tiles.example/a.json", "https://u:p@[::1]:8000/a.json",
         // Foundation reads this as user `tiles.example\` at host evil.example; WHATWG as host tiles.example.
         "https://tiles.example\\@evil.example/a.json",
+        // Foundation reads user `tiles.example%5C%FF`, which URL.user cannot decode and so reports as nil.
+        "https://tiles.example\\%FF@evil.example/a.json",
+        "https:/tiles.example/a.json", "https:\\\\tiles.example\\a.json",
+        "https://tiles.example:65536/a.json", "https://tiles%2Eexample/a.json", "http://[zz]/a.json",
         "https:tiles.example/a.json", "https:///a.json",
     ])
     func refused(_ tile: String) async throws {
@@ -221,12 +230,13 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         let server = try Loopback { request in
             guard request.path.contains("getTiles") else { return .init(status: 200, body: Data(#"{"records":[]}"#.utf8)) }
             let p = ports.port
-            let tiles = ["http://user:pw@127.0.0.1:\(p)/cred.json", "http://@127.0.0.1:\(p)/empty.json", "http://127.0.0.1:\(p)/ok.json"]
+            let tiles = ["http://user:pw@127.0.0.1:\(p)/cred.json", "http://@127.0.0.1:\(p)/empty.json",
+                         "http://h\\%FF@127.0.0.1:\(p)/undecodable.json", "http://127.0.0.1:\(p)/ok.json"]
             return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": tiles]))
         }
         ports.port = server.port
         let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion)
-        #expect(result.tiles == .init(fetched: 1, failed: 2))
+        #expect(result.tiles == .init(fetched: 1, failed: 3))
         #expect(server.received.filter { !$0.path.contains("/xrpc/") }.map(\.path) == ["/ok.json"])
         #expect(server.received.allSatisfy { !$0.headers.contains { $0.name.lowercased() == "authorization" } })
     }

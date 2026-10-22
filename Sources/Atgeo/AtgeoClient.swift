@@ -26,7 +26,14 @@ public actor AtgeoClient {
 
     private let base: String
     private let transport: any HTTPTransport
+    /// Where a returned search's failed tiles are logged; tests pass their own.
+    private let log: @Sendable (TileFailure) -> Void
     private var tiles: TileCache
+    /// Caches `body` under `url` as if it had been fetched, without parsing it; for tests of a cached tile
+    /// that fails to parse again, which a real fetch cannot cache.
+    func cacheUnparsedTile(_ url: String, body: Data) {
+        _ = tiles.insert(url, body: body, keys: [], size: body.count)
+    }
     private var tileLists: TtlCache<TileList>
     private var service: TtlCache<ServiceDescription>
     /// Tile bodies parsed, fetched or cached, for tests.
@@ -51,12 +58,14 @@ public actor AtgeoClient {
 
     /// Takes the clock both one-hour caches read, so tests can expire them.
     /// `memoize: false` parses every cached tile again on each read, so tests can show the memo changes nothing.
+    /// `log` receives each failed tile of a search that returns, in URL order.
     init(
         server: URL, transport: any HTTPTransport, cacheBudgetBytes: Int, now: @escaping @Sendable () -> Date,
-        memoize: Bool = true
+        memoize: Bool = true, log: @escaping @Sendable (TileFailure) -> Void = logTileFailure
     ) {
         base = xrpcBase(server)
         self.transport = transport
+        self.log = log
         tiles = TileCache(budget: cacheBudgetBytes, memoize: memoize)
         tileLists = TtlCache(ttl: Self.ttl, now: now)
         service = TtlCache(ttl: Self.ttl, now: now)
@@ -95,13 +104,16 @@ public actor AtgeoClient {
         // In URL order, whatever order the tiles arrived in, so the dedupe winner is fixed (contract §4.3), and
         // so are the failures (§4.4).
         let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
-        return SearchResult(
+        let result = SearchResult(
             places: assemble(records, region: region, query: query, sort: sort,
                              dataset: resolvedDataset, collection: resolvedCollection),
             complete: failures.isEmpty,
             overview: lists.contains(where: \.overview),
             tiles: .init(fetched: loaded.count, failed: failures.count),
             tileFailures: failures.sorted { ordinalLess($0.url, $1.url) })
+        // Logged only now, when the search is sure to return them, and in their order (contract §14).
+        result.tileFailures.forEach(log)
+        return result
     }
 
     /// One tile list per bbox, in bbox order. Both cache keys are looked up before any request, so only misses
@@ -260,11 +272,9 @@ public actor AtgeoClient {
     }
 }
 
-/// The failed tile, logged; or, if the search was cancelled, the error rethrown, so that a cancelled search
-/// fails rather than reporting its tiles as failed (contract §4.4).
+/// The failed tile; or, if the search was cancelled, the error rethrown, so that a cancelled search fails
+/// rather than reporting its tiles as failed (contract §4.4).
 private func tileFailure(_ url: String, _ kind: TileFailure.Kind, _ error: any Error, status: Int? = nil) throws -> TileFailure {
     if Task.isCancelled { throw error }
-    let failure = TileFailure(url: url, kind: kind, status: status, error: error)
-    logTileFailure(failure)
-    return failure
+    return TileFailure(url: url, kind: kind, status: status, error: error)
 }

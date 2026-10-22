@@ -66,8 +66,8 @@ public struct TileFailure: Sendable, Equatable, Codable {
     /// The HTTP status for `.status`, else nil.
     public var status: Int?
     /// What failed: `URLError(.unsupportedURL)` for `.refused`, the `AtgeoError` for `.status`, the parse error
-    /// for `.decode`, and the transport's own error for `.transport`. Nil only in a failure decoded from JSON,
-    /// since an error does not encode.
+    /// for `.decode`, and the transport's own error for `.transport`. The client always sets it; it is nil only
+    /// in a failure decoded from JSON, since an error does not encode, or one built with nil.
     public var error: (any Error)?
 
     public init(url: String, kind: Kind, status: Int? = nil, error: (any Error)?) {

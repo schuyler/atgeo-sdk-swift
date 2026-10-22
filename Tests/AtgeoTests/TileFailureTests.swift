@@ -96,6 +96,18 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         #expect(app.tileFailures.first?.error as? AtgeoError == thrown)
     }
 
+    @Test("report a cached tile that fails to parse again as decode, without a request")
+    func cachedReparse() async throws {
+        let server = try FakeServer(tilesFor: { _ in .tiles([tileURL("a")]) })
+        let client = server.client()
+        await client.cacheUnparsedTile(tileURL("a"), body: Data("not json".utf8))
+        let result = try await client.searchPlaces(region: sfRegion)
+        #expect(result.tileFailures == [TileFailure(url: tileURL("a"), kind: .decode, error: nil)])
+        #expect(result.tileFailures.first?.error != nil)
+        #expect(result.tiles == .init(fetched: 0, failed: 1))
+        #expect(server.requestStrings.filter { !$0.contains("/xrpc/") }.isEmpty)
+    }
+
     @Test("come in tile URL order, whatever order they completed in")
     func urlOrder() async throws {
         let refused = "ftp://tiles.example/0.json"
@@ -133,6 +145,58 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         // The tile's own error, as in the reference: the body failed to parse after the search was cancelled.
         case .failure(let error): #expect(!(error is CancellationError) && !(error is URLError), "\(error)")
         }
+    }
+}
+
+/// Records what the client logs.
+private final class LogSink: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entries: [TileFailure] = []
+    var logged: [TileFailure] { lock.withLock { entries } }
+    func record(_ failure: TileFailure) { lock.withLock { entries.append(failure) } }
+}
+
+private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient {
+    AtgeoClient(server: URL(string: defaultServer)!, transport: transport,
+                cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() }, log: log.record)
+}
+
+@Suite("tile failure logging") struct TileFailureLogTests {
+    @Test("logs each failure once, in URL order, when the search returns")
+    func logsInURLOrder() async throws {
+        let server = try FakeServer(
+            tilesets: [overture([tile("a"), tile("b"), tile("c")])],
+            tilesFor: { _ in .tiles([tileURL("c"), tileURL("b"), tileURL("a"), "ftp://tiles.example/0.json"]) },
+            failTiles: [tileURL("c"), tileURL("a")])
+        let delays: [String: TimeInterval] = [tileURL("a"): 0.2]
+        let sink = LogSink()
+        let result = try await client(DelayingTransport(server, delay: { delays[$0.absoluteString] }), log: sink)
+            .searchPlaces(region: sfRegion)
+        #expect(result.tileFailures.count == 3)
+        #expect(sink.logged == result.tileFailures)
+    }
+
+    @Test("logs nothing for a search that succeeds")
+    func nothingOnSuccess() async throws {
+        let sink = LogSink()
+        _ = try await client(try FakeServer(tilesets: [overture([tile("a")])]), log: sink).searchPlaces(region: sfRegion)
+        #expect(sink.logged.isEmpty)
+    }
+
+    @Test("logs nothing for a cancelled search, even for tiles that failed before the cancel")
+    func nothingWhenCancelled() async throws {
+        let server = try FakeServer(tilesets: [overture([tile("a"), tile("b")])], failTiles: [tileURL("a")])
+        let sink = LogSink()
+        let client = client(HoldThenGarbage(base: server, held: tileURL("b")), log: sink)
+        let task = Task { try await client.searchPlaces(region: sfRegion) }
+        let deadline = Date().addingTimeInterval(30)
+        while !(server.requestStrings.contains(tileURL("a")) && server.requestStrings.contains(tileURL("b"))) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 1_000_000)
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)  // tile a's failure has been collected
+        task.cancel()
+        await #expect(throws: (any Error).self) { try await task.value }
+        #expect(sink.logged.isEmpty)
     }
 }
 
