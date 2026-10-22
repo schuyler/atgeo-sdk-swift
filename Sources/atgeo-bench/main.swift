@@ -1,7 +1,7 @@
-// Times JSON parsing of a tile-sized body (design review note 12). Not part of `swift test`: run it as
+// Times JSON parsing of a tile-sized body (design review note 12), including the client's own parser. Not part of `swift test`: run it as
 // `swift run -c release atgeo-bench [tile.json ...]`. With no arguments it times a synthetic tile shaped like
 // an OSM tile from places.atgeo.org; each argument adds a real body read from that file.
-import Atgeo
+@_spi(Benchmark) import Atgeo
 import Foundation
 
 /// A deterministic tile: `count` records with the shape and size of the OSM tiles places.atgeo.org serves
@@ -126,22 +126,24 @@ let platform = "Linux"
 let platform = ProcessInfo.processInfo.operatingSystemVersionString
 #endif
 print("JSON parsing, \(platform), median ms of 15\n")
-print("| Body | KiB | Records | JSONDecoder → JSONValue | same, String first | JSONSerialization | JSONSerialization → JSONValue |")
-print("|---|---:|---:|---:|---:|---:|---:|")
+print("| Body | KiB | Records | JSONDecoder → JSONValue | same, String first | JSONSerialization | JSONSerialization → JSONValue | parseJSON |")
+print("|---|---:|---:|---:|---:|---:|---:|---:|")
 for (name, data) in bodies {
     var value = JSONValue.null
     let decoder = try median { value = try JSONDecoder().decode(JSONValue.self, from: data) }
     let stringFirst = try median { _ = try JSONDecoder().decode(StringFirst.self, from: data) }
+    let parser = try median { _ = try parseJSON(data) }
     let serialization = try median { _ = try JSONSerialization.jsonObject(with: data) }
     let converted = try median { _ = jsonValue(try JSONSerialization.jsonObject(with: data)) }
     // The parsers must agree, or the timings compare different work.
     guard jsonValue(try JSONSerialization.jsonObject(with: data)) == value,
-        try JSONDecoder().decode(StringFirst.self, from: data).jsonValue == value
+        try JSONDecoder().decode(StringFirst.self, from: data).jsonValue == value,
+        try parseJSON(data) == value
     else {
         FileHandle.standardError.write(Data("\(name): the parsers disagree\n".utf8))
         exit(1)
     }
     let records = value["records"]?.arrayValue?.count ?? 0
     let ms = { (t: Double) in String(format: "%.1f", t) }
-    print("| \(name) | \(data.count / 1024) | \(records) | \(ms(decoder)) | \(ms(stringFirst)) | \(ms(serialization)) | \(ms(converted)) |")
+    print("| \(name) | \(data.count / 1024) | \(records) | \(ms(decoder)) | \(ms(stringFirst)) | \(ms(serialization)) | \(ms(converted)) | \(ms(parser)) |")
 }
