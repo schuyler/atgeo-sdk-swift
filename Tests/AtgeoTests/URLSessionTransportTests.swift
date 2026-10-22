@@ -47,7 +47,7 @@ import Testing
         let server = try Loopback { _ in .init(status: 200, body: Data("{}".utf8), hold: true) }
         let transport = self.transport
         let task = Task { try await transport.get(server.url("/held")) }
-        #expect(server.waitForHeldRequest())
+        #expect(await server.waitForHeldRequest())
         task.cancel()
         // A watchdog: if cancellation did not abort the request, releasing it lets the task finish with a 200,
         // and the expectation below fails instead of the test hanging.
