@@ -166,10 +166,15 @@ private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked 
 
     var exceeded: Bool { lock.withLock { over } }
 
-    /// Apple platforms ask a task delegate about redirects, so this holds for a session the app supplies too.
+    /// Apple platforms ask a task delegate about redirects in place of the session's, so this holds for a
+    /// session the app supplies too. A redirect the check allows is passed on to the session's own delegate, if
+    /// it has one that answers, so that an app's redirect policy still applies.
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
-        completionHandler(isAllowedRedirect(request.url) ? request : nil)
+        guard isAllowedRedirect(request.url) else { return completionHandler(nil) }
+        let asked: Void? = (session.delegate as? URLSessionTaskDelegate)?.urlSession?(
+            session, task: task, willPerformHTTPRedirection: response, newRequest: request, completionHandler: completionHandler)
+        if asked == nil { completionHandler(request) }
     }
 
     func start(_ continuation: CheckedContinuation<Data, any Error>) {
@@ -266,8 +271,21 @@ func xrpcURL(base: String, nsid: String, _ params: [(name: String, value: String
 /// checked percent-encoded, since `URL.user` is nil for one that does not decode (`h%5C%FF`).
 func tileRequestURL(_ tile: String) -> URL? {
     let trimmed = trimmedLikeWHATWG(tile)
-    guard isHTTPURL(trimmed), let url = URL(string: trimmed),
-          let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+    guard isHTTPURL(trimmed), let url = URL(string: withLowercaseScheme(trimmed)), passesFoundationChecks(url) else { return nil }
+    return url
+}
+
+/// The scheme lowercased, as WHATWG writes it: FoundationNetworking fails `HTTPS://h/x` as an unsupported URL.
+private func withLowercaseScheme(_ url: String) -> String {
+    guard let separator = url.range(of: "://") else { return url }
+    return url[..<separator.lowerBound].lowercased() + url[separator.lowerBound...]
+}
+
+/// Foundation's own reading of a URL that has passed `isHTTPURL`. Defence in depth: the string check already
+/// refuses every `@` before the path and every authority NFKC would change, so these should not fail on their
+/// own; they are here so that a URL Foundation reads differently from the string check is refused, not sent.
+func passesFoundationChecks(_ url: URL) -> Bool {
+    guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
           let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
           let host = components.percentEncodedHost, !host.isEmpty,
           components.percentEncodedUser == nil, components.percentEncodedPassword == nil,
@@ -276,8 +294,8 @@ func tileRequestURL(_ tile: String) -> URL? {
           // `localhost\u{2100}x` becomes host `localhosta/cx`. What it would send must read the same again.
           isHTTPURL(url.absoluteString), let again = URL(string: url.absoluteString),
           again.host == url.host, again.port == url.port
-    else { return nil }
-    return url
+    else { return false }
+    return true
 }
 
 /// What a refused tile fails with: `URLError(.unsupportedURL)`, which is what FoundationNetworking itself
@@ -318,12 +336,13 @@ func isHTTPURL(_ url: String) -> Bool {
     // `a/c`, `\u{FF20}` to `@`); WHATWG then refuses the host, so refuse one that gains any.
     let mapped = String(decoding: authority, as: UTF8.self).precomposedStringWithCompatibilityMapping
     if delimiterCount(mapped) != delimiterCount(String(decoding: authority, as: UTF8.self)) { return false }
+    if String(decoding: authority, as: UTF8.self).unicodeScalars.contains(where: { refusedInHost.contains($0.value) }) { return false }
     let host: ArraySlice<UInt8>
     let afterHost: ArraySlice<UInt8>
     if authority.first == UInt8(ascii: "[") {
         guard let close = authority.firstIndex(of: UInt8(ascii: "]")) else { return false }
         host = authority[(authority.startIndex + 1)..<close]
-        guard host.allSatisfy({ isHexDigit($0) || $0 == UInt8(ascii: ":") || $0 == UInt8(ascii: ".") }) else { return false }
+        guard isIPv6Literal(String(decoding: host, as: UTF8.self)) else { return false }
         afterHost = authority[(close + 1)...]
     } else {
         host = authority.prefix { $0 != UInt8(ascii: ":") }
@@ -342,6 +361,41 @@ func isHTTPURL(_ url: String) -> Bool {
 /// and controls.
 private func delimiterCount(_ s: String) -> Int {
     s.unicodeScalars.filter { "/\\?#@:%[]".unicodeScalars.contains($0) || $0.properties.isWhitespace || $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }.count
+}
+
+/// Code points WHATWG's IDNA refuses in a host, or maps differently, that Foundation accepts: it drops the
+/// default-ignorable ones and maps U+1E9E (capital sharp s) to `ß`, where WHATWG maps it to `ss`.
+private let refusedInHost: Set<UInt32> = Set([0x1E9E, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180E, 0x3164, 0xFFA0,
+                                              0x2061, 0x2062, 0x2063])
+    .union(0x1D173...0x1D17A).union(0x2065...0x206F).union(0x200C...0x200F)
+
+/// An IPv6 address as WHATWG parses one between brackets: up to eight groups of one to four hex digits, at most
+/// one `::`, and optionally a dotted IPv4 address, with no leading zeros, in the last two groups' place.
+func isIPv6Literal(_ s: String) -> Bool {
+    let halves = s.components(separatedBy: "::")
+    guard halves.count <= 2 else { return false }
+    func groups(_ part: String) -> [Substring]? {
+        part.isEmpty ? [] : part.split(separator: ":", omittingEmptySubsequences: false)
+    }
+    guard var parts = halves.count == 2 ? (groups(halves[0]).flatMap { a in groups(halves[1]).map { a + $0 } }) : groups(s)
+    else { return false }
+    var count = parts.count
+    if let last = parts.last, last.contains(".") {
+        // The IPv4 part ends the address: `1.2.3.4::` is not one.
+        guard halves.count == 1 || !halves[1].isEmpty, isIPv4InIPv6(last) else { return false }
+        parts.removeLast()
+        count += 1
+    }
+    guard parts.allSatisfy({ (1...4).contains($0.count) && $0.utf8.allSatisfy(isHexDigit) }) else { return false }
+    return halves.count == 2 ? count <= 7 : count == 8
+}
+
+private func isIPv4InIPv6(_ s: Substring) -> Bool {
+    let octets = s.split(separator: ".", omittingEmptySubsequences: false)
+    return octets.count == 4 && octets.allSatisfy { o in
+        !o.isEmpty && o.utf8.allSatisfy { (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }
+            && (o.count == 1 || o.first != "0") && (Int(o).map { $0 <= 255 } ?? false)
+    }
 }
 
 private func isHexDigit(_ b: UInt8) -> Bool {

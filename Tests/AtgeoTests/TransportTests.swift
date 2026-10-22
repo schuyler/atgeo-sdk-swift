@@ -210,7 +210,24 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tileURL("a")])
     }
 
-    @Test("fetches an uppercase scheme and an IPv6 host", arguments: ["HTTPS://tiles.example/a.json", "http://[::1]:8000/a.json"])
+    @Test("fetches an uppercase scheme through the default transport, with the scheme lowercased")
+    func uppercaseScheme() async throws {
+        let ports = PortBox()
+        let server = try Loopback { request in
+            guard request.path.contains("getTiles") else {
+                return .init(status: 200, body: Data(#"{"records":[{"value":{"origin":"urn:atgeo:overturemaps.org:place:a","name":"A","locations":[{"$type":"community.lexicon.location.geo","latitude":"37.772","longitude":"-122.412"}]}}]}"#.utf8))
+            }
+            return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": ["HTTP://127.0.0.1:\(ports.port)/a.json"]]))
+        }
+        ports.port = server.port
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion)
+        #expect(result.tiles == .init(fetched: 1, failed: 0))
+        #expect(result.tileFailures.isEmpty)
+        #expect(result.places.map(\.origin) == [placeOrigin("a")])
+        #expect(tileRequestURL("HTTPS://tiles.example/a.json")?.absoluteString == "https://tiles.example/a.json")
+    }
+
+    @Test("fetches an IPv6 host", arguments: ["http://[::1]:8000/a.json"])
     func accepted(_ tile: String) async throws {
         let server = try FakeServer(tilesets: [overture([
             FakeTile(url: tile, records: [record(place("a", "A", [point(37.772, -122.412)]))]),
@@ -228,6 +245,41 @@ private func status(_ body: () async throws -> Void) async -> Int? {
             #expect(!isHTTPURL(bad), "\(bad)")
         }
         #expect(isHTTPURL("https://b\u{FC}cher.example/x"))
+    }
+
+    @Test("reads a bracketed host as WHATWG's IPv6 parser does")
+    func ipv6() {
+        for ok in ["::", "::1", "1::", "1:2:3:4:5:6:7:8", "1::8", "::ffff:1.2.3.4", "1:2:3:4:5:6:1.2.3.4", "fe80::1:2", "1:2:3:4:5:6:7::", "::1:2:3:4:5:6:7"] {
+            #expect(isIPv6Literal(ok), "\(ok)")
+        }
+        for bad in ["", "a", "127.0.0.1", ":::1", "1:2:3:4:5:6:7", "1:2:3:4:5:6:7:8:9", "1::2::3", "12345::", "::g",
+                    "::1.2.3", "::1.2.3.256", "::01.2.3.4", "1:2:3:4:5:6:7:1.2.3.4", "1.2.3.4::", ":1::2", "1::2:"] {
+            #expect(!isIPv6Literal(bad), "\(bad)")
+        }
+        #expect(!isHTTPURL("http://[127.0.0.1]/x") && !isHTTPURL("http://[a]/x") && !isHTTPURL("http://[:::1]/x"))
+    }
+
+    @Test("refuses a host holding a code point Foundation drops or maps where WHATWG refuses or maps otherwise",
+          arguments: [0x1E9E, 0x115F, 0x1160, 0x17B4, 0x17B5, 0x180E, 0x1D173, 0x1D17A, 0x2061, 0x2063, 0x2065, 0x206F,
+                      0x3164, 0xFFA0, 0x200C, 0x200F] as [UInt32])
+    func ignorables(_ cp: UInt32) {
+        #expect(!isHTTPURL("https://a\(Character(Unicode.Scalar(cp)!))b.example/x"), "U+\(String(cp, radix: 16))")
+    }
+
+    @Test("keeps a host holding a code point both WHATWG and Foundation drop", arguments: [0x200B, 0x2060, 0x2064, 0xFEFF, 0xAD, 0x34F] as [UInt32])
+    func droppedByBoth(_ cp: UInt32) {
+        #expect(tileRequestURL("https://a\(Character(Unicode.Scalar(cp)!))b.example/x")?.host == "ab.example", "U+\(String(cp, radix: 16))")
+    }
+
+    @Test("Foundation's own reading refuses what the string check would have caught first")
+    func defenceInDepth() throws {
+        // URLs the string check refuses, given straight to the checks behind it.
+        for s in ["https://u:p@h/x", "https://u@h/x", "https://h%5C%FF@x/y", "ftp://h/x", "http:///x"] {
+            if let url = URL(string: s) { #expect(!passesFoundationChecks(url), "\(s)") }
+        }
+        let mapped = try #require(URL(string: "http://localhost\u{2100}x/y"))
+        #expect(!passesFoundationChecks(mapped))
+        #expect(passesFoundationChecks(try #require(URL(string: "https://h:8080/x"))))
     }
 
     @Test("fetches an IDN host in punycode, as before")
