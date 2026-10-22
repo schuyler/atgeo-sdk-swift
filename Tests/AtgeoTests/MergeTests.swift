@@ -250,7 +250,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
     private static func run(_ arrival: [String], text: String?) async throws -> (SearchResult, [URL]) {
         let server = try FakeServer(tilesets: [overture(tiles)])
         let delaying = DelayingTransport(server) { url in
-            arrival.firstIndex { tileURL($0) == url.absoluteString }.map { Double($0) * 0.015 }
+            arrival.firstIndex { tileURL($0) == url.absoluteString }.map { Double($0) * 0.1 }
         }
         let client = AtgeoClient(server: URL(string: server.server)!, transport: delaying, cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() })
         let result = try await client.searchPlaces(region: sfRegion, text: text)

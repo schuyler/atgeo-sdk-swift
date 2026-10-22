@@ -258,15 +258,18 @@ private func cacheSetup() throws -> FakeServer {
             FakeTile(url: tileURL("b"), records: [record(place("b", "B", [point(37.773, -122.413)]))]),
         ])])
         let tileA = try await server.get(URL(string: tileURL("a"))!).body.count
-        let client = server.client(cacheBudgetBytes: tileA + 10)
-        let before = server.requests.count
-        _ = try await client.searchPlaces(region: sfRegion)
-        _ = try await client.searchPlaces(region: sfRegion)
-        // Only one tile fits. First search: a, then b, whose insert evicts a. Second: b is a hit and becomes most
-        // recently used, a is fetched again, and its insert evicts b.
         let tileB = try await server.get(URL(string: tileURL("b"))!).body.count
-        #expect(tileB <= tileA + 10 && tileA + tileB > tileA + 10)
-        #expect(server.requestStrings.dropFirst(before).filter { $0.hasPrefix("https://tiles.example/") }.dropLast()
-                == [tileURL("a"), tileURL("b"), tileURL("a")])
+        // Room for one tile, not two.
+        let budget = max(tileA, tileB) + 10
+        #expect(tileA + tileB > budget)
+        let client = server.client(cacheBudgetBytes: budget)
+        let tiles = { server.requestStrings.filter { $0.hasPrefix("https://tiles.example/") }.count }
+        let before = tiles()
+        _ = try await client.searchPlaces(region: sfRegion)
+        #expect(tiles() - before == 2)
+        // a and b arrive in either order, so which one survives varies; exactly one does. The second search finds
+        // it and fetches the other: not zero (nothing evicted) and not two (everything evicted).
+        _ = try await client.searchPlaces(region: sfRegion)
+        #expect(tiles() - before == 3)
     }
 }
