@@ -64,7 +64,7 @@ import Testing
         }
     }
 
-    @Test func sendsAcceptJSONAndNothingFromTheRequest() async throws {
+    @Test func sendsItsFixedHeadersAndNothingFromTheRequest() async throws {
         let marker = "zanzibar-quokka-7749295"
         let server = try Loopback { _ in .init(status: 200) }
         _ = try await transport.get(server.url("/echo/\(marker)?q=\(marker)"))
@@ -72,8 +72,23 @@ import Testing
         #expect(request.method == "GET")
         let accept = request.headers.filter { $0.name.lowercased() == "accept" }.map(\.value)
         #expect(accept == ["application/json"])
+        let agent = request.headers.filter { $0.name.lowercased() == "user-agent" }.map(\.value)
+        #expect(agent == ["atgeo-client-swift"])
         for (name, value) in request.headers {
             #expect(!name.lowercased().contains(marker) && !value.lowercased().contains(marker), "\(name): \(value)")
+        }
+    }
+
+    // TEMPORARY, removed before merge: prints what URLSession sends on each CI platform, to learn whether
+    // an explicit Accept-Language replaces the locale-derived one.
+    @Test func measureHeadersForAcceptLanguage() async throws {
+        let server = try Loopback { _ in .init(status: 200) }
+        _ = try await transport.get(server.url("/default"))
+        var request = URLRequest(url: server.url("/explicit"))
+        request.setValue("*", forHTTPHeaderField: "Accept-Language")
+        _ = try await URLSessionTransport.defaultSession.data(for: request)
+        for r in server.received {
+            print("HEADER-MEASURE \(r.path): " + r.headers.map { "\($0.name)=\($0.value)" }.joined(separator: " | "))
         }
     }
 }

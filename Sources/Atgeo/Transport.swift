@@ -20,8 +20,11 @@ public protocol HTTPTransport: Sendable {
     func get(_ url: URL) async throws -> HTTPResponse
 }
 
-/// The default transport. Sets `Accept: application/json` on every request and nothing else; whatever
-/// URLSession adds by itself (User-Agent, Accept-Language, Accept-Encoding) varies by platform.
+/// Sent in place of URLSession's own, which names the app, its build and the OS version (contract §12, item 5).
+let userAgent = "atgeo-client-swift"
+
+/// The default transport. Sets `Accept: application/json` and `User-Agent: atgeo-client-swift` on every
+/// request; whatever else URLSession adds by itself (Accept-Language, Accept-Encoding) varies by platform.
 public struct URLSessionTransport: HTTPTransport {
     /// Ephemeral, with no URL cache and no cookies: the client starts cold on every launch (contract §10, §14).
     public static let defaultSession: URLSession = {
@@ -42,6 +45,7 @@ public struct URLSessionTransport: HTTPTransport {
     public func get(_ url: URL) async throws -> HTTPResponse {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         let (body, response) = try await session.data(for: request)
         return HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: body)
     }
