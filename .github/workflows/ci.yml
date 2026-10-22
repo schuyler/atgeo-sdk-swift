@@ -48,3 +48,49 @@ jobs:
       - run: swift test
       - name: Benchmark JSON parsing (design review note 12)
         run: swift run -c release atgeo-bench | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # Package.swift claims iOS, tvOS, watchOS and visionOS too; build for each, and run the tests on the
+  # iOS simulator. The watchOS device build is the one that matters most: it compiles for arm64_32,
+  # where Int is 32 bits, which no simulator on an Apple Silicon runner uses.
+  apple-platforms:
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        destination:
+          - generic/platform=iOS Simulator
+          - generic/platform=tvOS Simulator
+          - generic/platform=watchOS Simulator
+          - generic/platform=visionOS Simulator
+          - generic/platform=watchOS
+    name: build (${{ matrix.destination }})
+    steps:
+      - uses: actions/checkout@v5
+      - run: xcodebuild -version
+      - name: Build
+        run: |
+          set -o pipefail
+          archs=()
+          if [ "${{ matrix.destination }}" = "generic/platform=watchOS" ]; then archs=(ARCHS=arm64_32); fi
+          xcodebuild build -scheme Atgeo -destination "${{ matrix.destination }}" \
+            CODE_SIGNING_ALLOWED=NO "${archs[@]}" | tee build.log
+          # Prove the 32-bit slice was compiled, rather than trusting the setting.
+          if [ ${#archs[@]} -gt 0 ]; then grep -q 'arm64_32' build.log; fi
+
+  ios-tests:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: xcodebuild -version
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available -j \
+            | jq -r '[.devices | to_entries[] | select(.key | contains("iOS")) | .value[] | select(.name | startswith("iPhone"))][0].udid')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
+      # The tests (not the library) use Regex, which needs iOS 16. The library's own iOS 15 build is the
+      # apple-platforms job above.
+      - name: Test
+        run: |
+          xcodebuild test -scheme atgeo-sdk-swift-Package -destination "id=${{ steps.sim.outputs.udid }}" \
+            CODE_SIGNING_ALLOWED=NO IPHONEOS_DEPLOYMENT_TARGET=16.0

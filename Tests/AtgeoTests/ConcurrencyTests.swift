@@ -37,17 +37,19 @@ private final class Counter: @unchecked Sendable {
     @Test func cancellingASearchWithAHeldTileThrowsRatherThanCountingAFailure() async throws {
         let server = try manyTiles(3)
         let held = tileURL("t01")
-        let delaying = DelayingTransport(server) { $0.absoluteString == held ? 60 : nil }
+        // Generous budgets: on the iOS simulator the whole suite starts at once and a test can wait tens of
+        // seconds for its tiles. Cancellation must still beat the held tile's 300 s by a wide margin.
+        let delaying = DelayingTransport(server) { $0.absoluteString == held ? 300 : nil }
         let c = client(delaying)
         let task = Task { try await c.searchPlaces(region: sf) }
         // Wait until the held tile is in flight, then cancel.
-        let deadline = Date().addingTimeInterval(10)
+        let deadline = Date().addingTimeInterval(120)
         while delaying.completionOrder.count < 3 && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
         #expect(delaying.completionOrder.count == 3)   // getTiles and the two other tiles
         let started = Date()
         task.cancel()
         let result = await task.result
-        #expect(Date().timeIntervalSince(started) < 10)
+        #expect(Date().timeIntervalSince(started) < 120)
         switch result {
         case .success(let r): Issue.record("expected cancellation, got a result with tiles \(r.tiles)")
         case .failure(let error): #expect(error is CancellationError || (error as? URLError)?.code == .cancelled, "got \(error)")
