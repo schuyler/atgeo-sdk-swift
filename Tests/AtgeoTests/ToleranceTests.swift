@@ -1,0 +1,232 @@
+import Foundation
+import Testing
+@testable import Atgeo
+
+// No reference counterpart: every contract §16 behaviour is one where the reference crashes or is laxer
+// than §1, so the reference has no test of it. Unit level here (bodies in, values out); step 8 adds the
+// same cases through the fake server.
+
+private func json(_ text: String) throws -> JSONValue { try decodeJSON(Data(text.utf8)) }
+
+private func isDecodingError(_ body: () throws -> Void) -> Bool {
+    do { try body(); return false } catch is DecodingError { return true } catch { return false }
+}
+
+private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
+
+@Suite("contract §16, bullet 1: getTiles bodies") struct GetTilesBodies {
+    @Test("no tiles array is no usable tile list", arguments: ["{}", "[]", #"{"tiles":"x"}"#, "null", "0", #""s""#, #"{"tiles":null}"#])
+    func noTilesArray(body: String) throws {
+        let v = try json(body)
+        #expect(isDecodingError { _ = try tileList(v) })
+    }
+
+    @Test func nonStringEntriesAreSkipped() throws {
+        let list = try tileList(try json(#"{"tiles":["https://a/1",2,null,{"u":"x"},["y"],true,"https://a/2"]}"#))
+        #expect(list.tiles == ["https://a/1", "https://a/2"])
+    }
+}
+
+@Suite("contract §16, bullet 2: null locations and variants") struct NullElements {
+    @Test func nullLocationIsSkippedAndALaterOneUsed() {
+        let value: JSONObject = ["origin": .string("o"), "locations": .array([.null, point(0, 0)])]
+        #expect(assemble(records: [TileRecord(value: value)], region: here, query: "", sort: .fused,
+                         dataset: "d", collection: nil).count == 1)
+    }
+
+    @Test func nullVariantIsSkippedWithText() {
+        let value: JSONObject = [
+            "origin": .string("o"), "name": .string("Munich"),
+            "variants": .array([.null]), "locations": .array([point(0, 0)]),
+        ]
+        let hits = assemble(records: [TileRecord(value: value)], region: here, query: "munich", sort: .fused,
+                            dataset: "d", collection: nil)
+        #expect(hits.first?.score == 1)
+    }
+}
+
+@Suite("contract §16, bullet 3: unusable records") struct UnusableRecords {
+    @Test func unusableRecordsAreSkippedAndTheTileKept() throws {
+        let payload = try json(#"""
+        {"records":[1,"s",[],null,{"uri":"u0"},{"value":null,"uri":"u1"},{"value":3,"uri":"u2"},
+                    {"value":"v","uri":"u3"},{"value":[],"uri":"u4"},{"value":{"name":"ok"},"uri":"u5"}]}
+        """#)
+        let records = try tileRecords(payload)
+        #expect(records == [TileRecord(value: ["name": .string("ok")], uri: "u5")])
+    }
+
+    @Test func aTileOfOnlyUnusableRecordsIsStillUsed() throws {
+        #expect(try tileRecords(try json(#"{"records":[null,1]}"#)).isEmpty)
+        #expect(try tileRecords(try json(#"{"records":[]}"#)).isEmpty)
+    }
+
+    // The reference consumes the dedupe key of a scalar-valued record, losing a later good copy.
+    @Test func aScalarValueDoesNotConsumeItsDedupeKey() throws {
+        let records = try tileRecords(try json(#"""
+        {"records":[{"value":5,"uri":"urn:x"},
+                    {"value":{"locations":[{"$type":"community.lexicon.location.geo","latitude":"0","longitude":"0"}]},"uri":"urn:x"}]}
+        """#))
+        let hits = assemble(records: records, region: here, query: "", sort: .fused, dataset: "d", collection: nil)
+        #expect(hits.map(\.origin) == ["urn:x"])
+    }
+
+    @Test("a payload that is not a records object fails the tile",
+          arguments: ["null", "[]", "1", #""s""#, "{}", #"{"records":{}}"#, #"{"records":"x"}"#])
+    func badPayload(body: String) throws {
+        let v = try json(body)
+        #expect(isDecodingError { _ = try tileRecords(v) })
+    }
+}
+
+@Suite("contract §16, bullet 4: wrong-typed fields are absent") struct WrongTypedFields {
+    @Test func nonStringUriIsAbsent() throws {
+        let records = try tileRecords(try json(#"{"records":[{"value":{},"uri":5},{"value":{},"uri":{"a":1}}]}"#))
+        #expect(records.map(\.uri) == [nil, nil])
+        #expect(records.map(recordKey) == [nil, nil])
+    }
+
+    @Test func nonNumberImportanceIsAbsent() throws {
+        let records = try tileRecords(try json(#"{"records":[{"value":{},"importance":"5"},{"value":{},"importance":[5]},{"value":{},"importance":true},{"value":{},"importance":null}]}"#))
+        #expect(records.map(\.importance) == [nil, nil, nil, nil])
+    }
+
+    @Test("importance range and truncation", arguments: [
+        ("1", Int64?.some(1)), ("1.9", 1), ("-1.9", -1), ("-0.9", 0), ("0", 0),
+        ("9007199254740993", 9007199254740992),
+        ("9223372036854774784", 9223372036854774784),
+        ("9223372036854775807", nil), ("9223372036854775808", nil), ("-9223372036854775808", nil), ("1e300", nil),
+    ])
+    func importance(literal: String, expected: Int64?) throws {
+        let records = try tileRecords(try json(#"{"records":[{"value":{},"importance":\#(literal)}]}"#))
+        #expect(records.first?.importance == expected)
+    }
+
+    @Test func oneElementArrayCoordinateIsNoLocation() {
+        let value: JSONObject = ["locations": .array([.object([
+            "$type": .string("community.lexicon.location.geo"), "latitude": .array([.number(0.5)]), "longitude": .number(0),
+        ])])]
+        #expect(locate(value).point == nil)
+    }
+
+    @Test("error body fields are judged on their own", arguments: [
+        (#"{"error":"BboxTooLarge","message":"too big"}"#, "BboxTooLarge", "too big"),
+        (#"{"error":"BboxTooLarge"}"#, "BboxTooLarge", "HTTP 400"),
+        (#"{"message":"too big"}"#, "HttpError", "too big"),
+        (#"{"error":5,"message":"too big"}"#, "HttpError", "too big"),
+        (#"{"error":"X","message":{"m":1}}"#, "X", "HTTP 400"),
+        (#"{"error":null,"message":null}"#, "HttpError", "HTTP 400"),
+        ("null", "HttpError", "HTTP 400"),
+        (#"["BboxTooLarge"]"#, "HttpError", "HTTP 400"),
+        (#""BboxTooLarge""#, "HttpError", "HTTP 400"),
+        ("", "HttpError", "HTTP 400"),
+        ("<html>", "HttpError", "HTTP 400"),
+    ])
+    func errorBody(body: String, code: String, message: String) {
+        #expect(atgeoError(status: 400, body: Data(body.utf8)) == AtgeoError(code: code, message: message))
+    }
+
+    @Test func unknownCodesPassThrough() {
+        #expect(atgeoError(status: 503, body: Data(#"{"error":"SomethingNew"}"#.utf8)) == AtgeoError(code: "SomethingNew", message: "HTTP 503"))
+    }
+}
+
+@Suite("contract §16, bullet 5: getPlace and describe bodies") struct PlaceAndDescribeBodies {
+    @Test("getPlace with no record object", arguments: ["null", "{}", #"{"record":null}"#, #"{"record":"x"}"#, #"{"record":[]}"#, "[]", "1"])
+    func noRecord(body: String) throws {
+        let v = try json(body)
+        #expect(isDecodingError { _ = try placeRecord(v, origin: "o") })
+    }
+
+    @Test func getPlaceReturnsTheCallersOrigin() throws {
+        let r = try placeRecord(try json(#"{"uri":"other","record":{"name":"N"},"importance":7}"#), origin: "mine")
+        #expect(r == PlaceRecord(origin: "mine", place: ["name": .string("N")], importance: 7))
+        #expect(try placeRecord(try json(#"{"record":{},"importance":"7"}"#), origin: "o").importance == nil)
+    }
+
+    @Test("describe bodies that are not objects", arguments: ["null", "false", "0", #""""#, "[]", "true", "1"])
+    func describeNotAnObject(body: String) throws {
+        let v = try json(body)
+        #expect(isDecodingError { _ = try serviceDescription(v) })
+        #expect(isDecodingError { _ = try tileset(v) })
+    }
+}
+
+@Suite("overview truthiness") struct OverviewTruthiness {
+    // nil: the field is absent.
+    @Test(arguments: [
+        (String?.none, false), ("null", false), ("false", false), ("0", false), ("-0", false), ("-0.0", false),
+        (#""""#, false), ("true", true), ("1", true), ("-1", true), ("0.5", true), (#""false""#, true),
+        (#""0""#, true), (#"" ""#, true), ("[]", true), ("{}", true),
+    ])
+    func overview(literal: String?, expected: Bool) throws {
+        let body = literal.map { #"{"tiles":[],"overview":\#($0)}"# } ?? #"{"tiles":[]}"#
+        #expect(try tileList(try json(body)).overview == expected)
+    }
+}
+
+@Suite("describe types read leniently") struct DescribeTypes {
+    @Test func serviceDescriptionDefaultsAndDrops() throws {
+        #expect(try serviceDescription(try json("{}")) == ServiceDescription(did: nil, tilesets: []))
+        let s = try serviceDescription(try json(#"""
+        {"did":5,"tilesets":[null,1,{"slug":"a","collections":"x"},{"slug":7,"collections":[null,{"dataset":"d","collection":3,"extra":1}]}],"unknown":true}
+        """#))
+        #expect(s.did == nil)
+        #expect(s.tilesets == [
+            .init(slug: "a", collections: []),
+            .init(slug: nil, collections: [CollectionRef(dataset: "d", collection: nil)]),
+        ])
+        #expect(try serviceDescription(try json(#"{"tilesets":"x"}"#)).tilesets == [])
+    }
+
+    @Test func tilesetDefaultsAndDrops() throws {
+        let empty = try tileset(try json("{}"))
+        #expect(empty == Tileset(slug: nil, publishedAt: nil, extent: nil, collections: [], references: nil))
+        let t = try tileset(try json(#"""
+        {"slug":"s","publishedAt":5,"extent":{"north":"1","south":2,"east":"3"},
+         "collections":[null,{"dataset":"d","recordCount":12.7,"licenses":["a",1,"b"],"categories":[{"value":"v","count":3},2,{"count":1e300}],"locationFormats":"x"}],
+         "references":[{"dataset":"r","licenses":"x"},"y"]}
+        """#))
+        #expect(t.slug == "s")
+        #expect(t.publishedAt == nil)
+        #expect(t.extent == Tileset.Extent(north: "1", south: nil, east: "3", west: nil))
+        #expect(t.collections.count == 1)
+        let c = try #require(t.collections.first)
+        #expect(c.dataset == "d" && c.recordCount == 12 && c.licenses == ["a", "b"] && c.locationFormats == nil)
+        #expect(c.categories == [.init(value: "v", count: 3), .init(value: nil, count: nil)])
+        #expect(t.references == [CollectionAttribution(dataset: "r", collection: nil, release: nil, source: nil, licenses: nil, attribution: nil)])
+        #expect(try tileset(try json(#"{"extent":"x","collections":{},"references":5}"#)).extent == nil)
+    }
+
+    // Addendum B: the synthesized decoder is strict and is never used on a response.
+    @Test func synthesizedCodableIsStrict() {
+        #expect(throws: DecodingError.self) { try JSONDecoder().decode(ServiceDescription.self, from: Data("{}".utf8)) }
+    }
+}
+
+/// Addendum C: the parser's behaviour at the margins, as CONFORMANCE.md records it. Runs on every CI
+/// platform, so a Foundation that behaves differently fails here and CONFORMANCE.md is revised from it.
+@Suite("JSONDecoder margins (CONFORMANCE.md)") struct ParserMargins {
+    @Test func overflowingNumberFailsToParse() {
+        #expect(throws: DecodingError.self) { try json("[1e400]") }
+    }
+
+    @Test func underflowingNumberFailsToParse() {
+        #expect(throws: DecodingError.self) { try json("[1e-400]") }
+    }
+
+    @Test func duplicateKeysKeepTheFirstValue() throws {
+        #expect(try json(#"{"a":1,"a":2}"#)["a"] == .number(1))
+    }
+
+    @Test func loneSurrogateEscapeFailsToParse() {
+        #expect(throws: DecodingError.self) { try json(#"["\uD800"]"#) }
+    }
+
+    @Test func canonicallyEquivalentKeysMerge() throws {
+        #expect(try json(#"{"é":1,"é":2}"#).objectValue?.count == 1)
+    }
+
+    @Test func integersBeyond2To53RoundAsInJavaScript() throws {
+        #expect(try json("9007199254740993") == .number(9007199254740992))
+    }
+}

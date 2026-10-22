@@ -1,0 +1,37 @@
+import Foundation
+
+// Dedupe and the collection filter, contract §4.6 and §4.7.
+
+/// `value.origin` if a string, else the record's `uri`, else none.
+func recordKey(_ r: TileRecord) -> String? {
+    r.value["origin"]?.stringValue ?? r.uri
+}
+
+/// Keeps the first copy of each key, in the order given; records without a key all pass. Keys are
+/// compared by UTF-16 code units, so origins differing only in normalization form stay distinct.
+func dedupe(_ records: [TileRecord]) -> [TileRecord] {
+    var seen = Set<[UInt16]>()
+    return records.filter { r in
+        guard let key = recordKey(r) else { return true }
+        return seen.insert(Array(key.utf16)).inserted
+    }
+}
+
+/// Keeps records whose `value.origin` is a string starting with `urn:atgeo:{dataset}:{collection}:`,
+/// by code units. `String.hasPrefix` compares grapheme clusters, which a combining mark after the final
+/// colon would change.
+func inCollection(_ r: TileRecord, dataset: String, collection: String) -> Bool {
+    guard let origin = r.value["origin"]?.stringValue else { return false }
+    return origin.utf16.starts(with: "urn:atgeo:\(dataset):\(collection):".utf16)
+}
+
+/// Contract §4.6 to §4.9 over the concatenated records of the used tiles, in URL order. `query` is
+/// already normalized; "" means no text. `collection` is the resolved collection, nil for a whole dataset.
+func assemble(
+    records: [TileRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?
+) -> [SearchHit] {
+    let kept = dedupe(records)
+        .filter { r in collection.map { inCollection(r, dataset: dataset, collection: $0) } ?? true }
+        .filter { inRegion(locate($0.value), region) }
+    return rank(kept, region: region, query: query, sort: sort)
+}
