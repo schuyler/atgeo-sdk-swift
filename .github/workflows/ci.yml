@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    container: swift:6.4-noble
+    steps:
+      - uses: actions/checkout@v4
+      - name: Sources import only Foundation and FoundationNetworking
+        run: |
+          modules=$(grep -rhE '^[[:space:]]*(@[A-Za-z_]+[[:space:]]+)*import[[:space:]]' Sources \
+            | sed -E 's/^.*import[[:space:]]+([a-z]+[[:space:]]+)?([A-Za-z_]+).*$/\2/' | sort -u)
+          echo "$modules"
+          bad=$(echo "$modules" | grep -vxE 'Foundation|FoundationNetworking|Atgeo' || true)
+          if [ -n "$bad" ]; then echo "unexpected imports: $bad"; exit 1; fi
+      - run: swift --version
+      - run: swift build
+      - run: swift test
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - run: swift build
+      - run: swift test
