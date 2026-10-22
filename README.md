@@ -169,19 +169,19 @@ The server also sees your IP address and whatever headers your transport sends. 
 
 `getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `place(origin:)` checks cached tiles before asking the server.
 
-The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: about 1.1 times, the rest being an index for `place(origin:)`. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `place(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
+The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: 1.0 to 1.4 times, measured below, the rest being an index for `place(origin:)` and allocator overhead. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `place(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
 
-Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves, on Linux (x86_64, release build), after asking the allocator to return free pages:
+Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves (49.4 MiB of bodies), in a release build. On Linux the figure is RSS; on macOS it's the process's physical footprint, the number iOS and watchOS limit an app or extension by. Each is read after asking the allocator to return free pages:
 
-| | Resident memory |
-|---|---:|
-| Parsed records, as the cache held them until October 2026 | 202 MiB (4.1 times the bodies) |
-| Bodies and the key index | 54 MiB (1.1 times) |
-| Plus the latest search's 8 tiles parsed | 102 MiB (2.1 times) |
+| | Linux (x86_64) | macOS 14 | macOS 26 |
+|---|---:|---:|---:|
+| Parsed records, as the cache held them until October 2026 | 202 MiB (4.1×) | 181 MiB (3.7×) | 210 MiB (4.3×) |
+| Bodies and the key index | 54 MiB (1.1×) | 48 MiB (1.0×) | 67 MiB (1.4×) |
+| Plus the latest search's 8 tiles parsed | 102 MiB (2.1×) | 70 MiB (1.4×) | 82–94 MiB (1.7–1.9×) |
 
-The parsed tiles of one search cost about four times their bodies on their own (26 MiB for 8 tiles here); the rest of the difference is the allocator holding on to pages that earlier searches' parsed tiles left fragmented. So budget for the default 50 MiB plus four to seven times the size of one search's tiles; 8 tiles like these are 7 MB of bodies. CI runs the same benchmark on macOS, where the figure is the process's physical footprint, the number iOS and watchOS limit an app or extension by. In an extension or on watchOS, a smaller `cacheBudgetBytes` is still a good idea.
+The parsed tiles of one search cost about four times their bodies (26 MiB for these 8 tiles, which are 7 MB of bodies); on Linux the total comes out higher than that because glibc holds on to pages that earlier searches' parsed tiles left fragmented. So budget for the default 50 MiB plus four to seven times the size of one search's tiles. In an extension or on watchOS, a smaller `cacheBudgetBytes` is still a good idea.
 
-A search with text over a warm region of 36k records takes about 245 ms on that machine, down from about 650 ms, since names are normalized once per parse rather than on every search.
+A search with text over a warm region of 36k records takes about 245 ms on Linux and 185 to 250 ms on the macOS CI runners, down from 575 to 675 ms, since names are normalized once per parse rather than on every search.
 
 There is no persistence; a new client starts cold. The default transport uses an ephemeral `URLSession` with no URL cache and no cookies, so nothing is cached behind the client's back either.
 
