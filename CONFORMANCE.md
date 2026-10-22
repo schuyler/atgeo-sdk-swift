@@ -33,6 +33,15 @@ U+FFFD, as the reference's `response.text()` makes it; a leading byte-order mark
 | Leading whitespace or trailing text (`" 1.5"`, `"1.5abc"`) | no location | `parseFloat` reads the leading number |
 | `importance` of exactly -2^63 (`Int64.min`) | absent: the range guard is `magnitude < 2^63`, symmetric, as contract §1 and the Kotlin port have it | kept as the number |
 
+## Tile URLs
+
+Tile URLs are fetched as `getTiles` returns them, through `URL(string:)`, whose handling of characters that
+are not allowed raw in a URL depends on the Foundation it runs on.
+
+| Input | This port | Reference (`fetch`) |
+|---|---|---|
+| A tile URL holding a character not allowed raw in a URL (a space, say) | percent-encoded and fetched, on Linux and on Apple platforms from iOS 17 / macOS 14 (Apple's `URL(string:)` encodes invalid characters from those releases on); before them `URL(string:)` returns nil and the tile counts as failed | percent-encoded and fetched |
+
 ## Unicode skew
 
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode

@@ -9,9 +9,11 @@ let server = URL(string: env["ATGEO_SERVER"] ?? "http://localhost:8000")!
 let dataset = env["ATGEO_DATASET"] ?? "openstreetmap.org"
 let collection = env["ATGEO_COLLECTION"]
 // "lat,lon,radius" in metres; the default is Manchester, NH, inside the local OSM New Hampshire tileset.
-let parts = (env["ATGEO_REGION"] ?? "43.0,-71.45,3000").split(separator: ",").compactMap { Double($0) }
-guard parts.count == 3 else { fail("ATGEO_REGION must be lat,lon,radius") }
-let (lat, lon, radius) = (parts[0], parts[1], parts[2])
+// Every part must parse, so "43,-71,3000,junk" is rejected rather than read as its first three numbers.
+let parts = (env["ATGEO_REGION"] ?? "43.0,-71.45,3000").split(separator: ",", omittingEmptySubsequences: false).map { Double($0) }
+guard parts.count == 3, let lat = parts[0], let lon = parts[1], let radius = parts[2] else {
+    fail("ATGEO_REGION must be lat,lon,radius")
+}
 let region = Region.circle(lat: lat, lon: lon, radius: radius)
 
 func fail(_ message: String) -> Never {

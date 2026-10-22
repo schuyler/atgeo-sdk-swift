@@ -334,7 +334,7 @@ private func sourceFiles() throws -> [(String, String)] {
     func imports() throws {
         for (file, text) in try sourceFiles() where file != "main.swift" {
             for line in text.split(separator: "\n") {
-                guard let m = line.firstMatch(of: /^\s*(?:@\w+\s+)*import\s+(?:[a-z]+\s+)?(\w+)/) else { continue }
+                guard let m = line.firstMatch(of: /^\s*(?:@\w+(?:\([^)]*\))?\s+)*import\s+(?:[a-z]+\s+)?(\w+)/) else { continue }
                 #expect(["Foundation", "FoundationNetworking"].contains(String(m.1)), "\(file): \(line)")
             }
         }

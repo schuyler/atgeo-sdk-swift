@@ -4,41 +4,91 @@ import Foundation
 // `JSONValue`. Nothing here decodes a response with a synthesized `Decodable` (design review, addendum B):
 // the synthesized `Codable` conformances are strict and exist for apps that persist what they fetched.
 
-public enum SortMode: String, Sendable, CaseIterable { case fused, distance, similarity }
+public enum SortMode: String, Sendable, CaseIterable, Codable { case fused, distance, similarity }
 
-public struct SearchResult: Sendable, Equatable {
+// Every public type has a public memberwise initializer, which Swift does not synthesize for code outside the
+// module, so an app can build results for its own tests and previews. The client never uses them on a response.
+
+public struct SearchResult: Sendable, Equatable, Codable {
     public var places: [SearchHit]
     public var complete: Bool
     public var overview: Bool
     public var tiles: TileCounts
-    public struct TileCounts: Sendable, Equatable { public var fetched: Int; public var failed: Int }
+    public struct TileCounts: Sendable, Equatable, Codable {
+        public var fetched: Int
+        public var failed: Int
+        public init(fetched: Int, failed: Int) { self.fetched = fetched; self.failed = failed }
+    }
+
+    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts) {
+        self.places = places
+        self.complete = complete
+        self.overview = overview
+        self.tiles = tiles
+    }
 }
 
-public struct SearchHit: Sendable, Equatable {
+public struct SearchHit: Sendable, Equatable, Codable {
     public var origin: String?
     public var place: JSONObject
     public var importance: Int64?
     public var distance: Double      // metres
     public var score: Double?        // 0...1, nil without text
+
+    public init(origin: String?, place: JSONObject, importance: Int64?, distance: Double, score: Double?) {
+        self.origin = origin
+        self.place = place
+        self.importance = importance
+        self.distance = distance
+        self.score = score
+    }
 }
 
-public struct PlaceRecord: Sendable, Equatable {
+public struct PlaceRecord: Sendable, Equatable, Codable {
     public var origin: String
     public var place: JSONObject
     public var importance: Int64?
+
+    public init(origin: String, place: JSONObject, importance: Int64?) {
+        self.origin = origin
+        self.place = place
+        self.importance = importance
+    }
 }
 
-public struct CollectionRef: Sendable, Equatable, Codable { public var dataset: String?; public var collection: String? }
+public struct CollectionRef: Sendable, Equatable, Codable {
+    public var dataset: String?
+    public var collection: String?
+    public init(dataset: String?, collection: String?) { self.dataset = dataset; self.collection = collection }
+}
 
 public struct ServiceDescription: Sendable, Equatable, Codable {
     public var did: String?
     public var tilesets: [ServedTileset]        // empty when missing
-    public struct ServedTileset: Sendable, Equatable, Codable { public var slug: String?; public var collections: [CollectionRef] }
+    public struct ServedTileset: Sendable, Equatable, Codable {
+        public var slug: String?
+        public var collections: [CollectionRef]
+        public init(slug: String?, collections: [CollectionRef]) { self.slug = slug; self.collections = collections }
+    }
+
+    public init(did: String?, tilesets: [ServedTileset]) { self.did = did; self.tilesets = tilesets }
 }
 
 public struct CollectionAttribution: Sendable, Equatable, Codable {
     public var dataset: String?, collection: String?
     public var release: String?, source: String?, licenses: [String]?, attribution: String?
+
+    public init(
+        dataset: String?, collection: String?,
+        release: String? = nil, source: String? = nil, licenses: [String]? = nil, attribution: String? = nil
+    ) {
+        self.dataset = dataset
+        self.collection = collection
+        self.release = release
+        self.source = source
+        self.licenses = licenses
+        self.attribution = attribution
+    }
 }
 
 public struct CollectionInfo: Sendable, Equatable, Codable {
@@ -46,7 +96,30 @@ public struct CollectionInfo: Sendable, Equatable, Codable {
     public var release: String?, source: String?, licenses: [String]?, attribution: String?
     public var recordCount: Int64?, locationFormats: [String]?, containmentTypes: [String]?
     public var categories: [CategoryCount]?, attributes: [String]?
-    public struct CategoryCount: Sendable, Equatable, Codable { public var value: String?; public var count: Int64? }
+    public struct CategoryCount: Sendable, Equatable, Codable {
+        public var value: String?
+        public var count: Int64?
+        public init(value: String?, count: Int64?) { self.value = value; self.count = count }
+    }
+
+    public init(
+        dataset: String?, collection: String?,
+        release: String? = nil, source: String? = nil, licenses: [String]? = nil, attribution: String? = nil,
+        recordCount: Int64? = nil, locationFormats: [String]? = nil, containmentTypes: [String]? = nil,
+        categories: [CategoryCount]? = nil, attributes: [String]? = nil
+    ) {
+        self.dataset = dataset
+        self.collection = collection
+        self.release = release
+        self.source = source
+        self.licenses = licenses
+        self.attribution = attribution
+        self.recordCount = recordCount
+        self.locationFormats = locationFormats
+        self.containmentTypes = containmentTypes
+        self.categories = categories
+        self.attributes = attributes
+    }
 }
 
 public struct Tileset: Sendable, Equatable, Codable {
@@ -55,7 +128,26 @@ public struct Tileset: Sendable, Equatable, Codable {
     public var extent: Extent?
     public var collections: [CollectionInfo]    // empty when missing
     public var references: [CollectionAttribution]?
-    public struct Extent: Sendable, Equatable, Codable { public var north: String?, south: String?, east: String?, west: String? }
+    public struct Extent: Sendable, Equatable, Codable {
+        public var north: String?, south: String?, east: String?, west: String?
+        public init(north: String?, south: String?, east: String?, west: String?) {
+            self.north = north
+            self.south = south
+            self.east = east
+            self.west = west
+        }
+    }
+
+    public init(
+        slug: String?, publishedAt: String? = nil, extent: Extent? = nil,
+        collections: [CollectionInfo], references: [CollectionAttribution]? = nil
+    ) {
+        self.slug = slug
+        self.publishedAt = publishedAt
+        self.extent = extent
+        self.collections = collections
+        self.references = references
+    }
 }
 
 /// A usable record from a tile payload (contract §4.4): `value` is an object; `uri` and `importance` are
