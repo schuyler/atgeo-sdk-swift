@@ -277,8 +277,14 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         for s in ["https://u:p@h/x", "https://u@h/x", "https://h%5C%FF@x/y", "ftp://h/x", "http:///x"] {
             if let url = URL(string: s) { #expect(!passesFoundationChecks(url), "\(s)") }
         }
+        #if canImport(FoundationNetworking)
+        // Linux reads the host as `localhosta/cx`, which does not parse back to itself.
         let mapped = try #require(URL(string: "http://localhost\u{2100}x/y"))
         #expect(!passesFoundationChecks(mapped))
+        #endif
+        // Apple's Foundation returns nil for it (CI's macos-latest, macOS and iOS simulator), or reads host `localhosta`, path `/cx/y`,
+        // consistently (macOS 14); there only the string check refuses it. Every platform refuses it in the end.
+        #expect(tileRequestURL("http://localhost\u{2100}x/y") == nil)
         #expect(passesFoundationChecks(try #require(URL(string: "https://h:8080/x"))))
     }
 
