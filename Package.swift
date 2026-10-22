@@ -16,6 +16,8 @@ let package = Package(
             dependencies: ["Atgeo"],
             resources: [.copy("Fixtures")]
         ),
+        // Imports Atgeo without @testable, so it compiles only against the public API, as an app does.
+        .testTarget(name: "AtgeoPublicAPITests", dependencies: ["Atgeo"]),
     ],
     swiftLanguageModes: [.v6]
 )

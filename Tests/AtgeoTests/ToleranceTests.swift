@@ -359,3 +359,20 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
         #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf) })
     }
 }
+
+// CONFORMANCE.md, "Tile URLs": a tile URL is fetched through URL(string:), whose answer for a character
+// that is not allowed raw differs by Foundation. This pins the table's claim on every CI platform.
+@Suite("tile URLs with characters not allowed raw") struct TileURLCharacters {
+    @Test func aSpaceIsEncodedOrTheURLIsRejected() {
+        let url = URL(string: "https://tiles.example/a b.json")
+        #if os(Linux)
+        #expect(url?.absoluteString == "https://tiles.example/a%20b.json")
+        #else
+        if #available(macOS 14, iOS 17, tvOS 17, watchOS 10, visionOS 1, *) {
+            #expect(url?.absoluteString == "https://tiles.example/a%20b.json")
+        } else {
+            #expect(url == nil)
+        }
+        #endif
+    }
+}

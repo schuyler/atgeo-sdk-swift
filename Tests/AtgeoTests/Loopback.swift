@@ -69,9 +69,15 @@ final class Loopback: @unchecked Sendable {
     /// Lets every held response go.
     func release() { for _ in 0..<lock.withLock({ heldCount }) { released.signal() } }
 
-    /// Blocks until a held request has arrived, or the timeout passes.
-    func waitForHeldRequest(timeout: TimeInterval = 10) -> Bool {
-        heldArrived.wait(timeout: .now() + timeout) == .success
+    /// Waits until a held request has arrived, or the timeout passes. The semaphore is waited on off the
+    /// cooperative pool: blocking a pool thread here can starve the task that sends the request, since Apple
+    /// platforms size the pool to the core count and the whole suite runs on it in parallel.
+    func waitForHeldRequest(timeout: TimeInterval = 60) async -> Bool {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [heldArrived] in
+                continuation.resume(returning: heldArrived.wait(timeout: .now() + timeout) == .success)
+            }
+        }
     }
 
     private func acceptLoop() {

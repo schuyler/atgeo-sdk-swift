@@ -106,6 +106,8 @@ public struct SearchHit {
 
 `JSONObject` is `[String: JSONValue]`, and `JSONValue` is an enum of the six JSON types, with `stringValue`, `doubleValue`, `boolValue`, `arrayValue` and `objectValue` accessors and subscripts by key and index, so `hit.place["locations"]?[0]?["latitude"]?.stringValue` reads what you'd expect. Nothing about a place is decoded into a Swift type: `place` is the gazetteer's value untouched, every key as served. Importance lives on `hit.importance` and identity on `hit.origin`.
 
+Every result type has a public initializer, so you can build a `SearchResult` or a `PlaceRecord` for your own tests and SwiftUI previews without a server. They're `Codable` too, so a saved place can be a `PlaceRecord` written with `JSONEncoder`. One catch: a number too large for a double, which no garganorn sends, is read as infinity (as JavaScript reads it), and `JSONEncoder` refuses to write infinity unless you set its `nonConformingFloatEncodingStrategy`.
+
 When `text` is given, places scoring below 0.6 are dropped.
 
 Sort modes:
@@ -138,11 +140,11 @@ Returns the server's `did` and its `tilesets`, each a `slug` and its `collection
 
 Returns the tileset's descriptor: `slug`, `collections` (each with `dataset`, `collection` and optional `release`, `source`, `licenses`, `attribution`, `recordCount`, `locationFormats`, `containmentTypes`, `categories` and `attributes`), and optional `publishedAt`, `extent` and `references`. Not cached.
 
-Every field of the describe types is optional, and a field the server drops or retypes comes back `nil` rather than failing the call. They're `Codable`, if you want to store what you fetched.
+Every field of the describe types is optional, and a field the server drops or retypes comes back `nil` rather than failing the call. Like the result types, they're `Codable` and have public initializers.
 
 ### Errors
 
-- `AtgeoError` has a `code` and a `message`. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
+- `AtgeoError` has a `code` and a `message`; its `localizedDescription` is the message followed by the code in parentheses, and `AtgeoArgumentError`'s says what was wrong with the arguments. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
 - `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `minLat > maxLat`, negative radius) and for `.similarity` without text, before any request.
 - A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `record`), throws `DecodingError`.
 - A failed `getTiles` request fails the whole search. A failed tile does not: that tile is skipped, `tiles.failed` counts it, and `complete` is `false`.
@@ -166,6 +168,8 @@ The server also sees your IP address and whatever headers your transport sends. 
 ## Caching
 
 `getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `place(origin:)` checks cached tiles before asking the server.
+
+The budget counts each tile's body as it arrived over the network, but the cache holds the parsed records, which take more memory than the bytes they came from: about four times more, measured on Linux with `atgeo-bench`'s synthetic tile, which is shaped like the OSM tiles places.atgeo.org serves. So the default 50 MiB budget can mean about 200 MB of memory. That's fine for most apps; in an extension or on watchOS, where the memory limits are much tighter, pass a smaller `cacheBudgetBytes`.
 
 There is no persistence; a new client starts cold. The default transport uses an ephemeral `URLSession` with no URL cache and no cookies, so nothing is cached behind the client's back either.
 
