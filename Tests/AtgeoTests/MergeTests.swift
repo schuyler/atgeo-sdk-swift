@@ -247,14 +247,12 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         ]),
     ]
 
-    private static func run(_ arrival: [String], text: String?) async throws -> (SearchResult, [URL]) {
+    private static func run(_ arrival: [String], text: String?) async throws -> (SearchResult, [String]) {
         let server = try FakeServer(tilesets: [overture(tiles)])
-        let delaying = DelayingTransport(server) { url in
-            arrival.firstIndex { tileURL($0) == url.absoluteString }.map { Double($0) * 0.1 }
-        }
-        let client = AtgeoClient(server: URL(string: server.server)!, transport: delaying, cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() })
+        let ordered = OrderedTransport(server, order: arrival.map(tileURL))
+        let client = AtgeoClient(server: URL(string: server.server)!, transport: ordered, cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() })
         let result = try await client.searchPlaces(region: sfRegion, text: text)
-        return (result, delaying.completionOrder.filter { $0.absoluteString.hasPrefix("https://tiles.example/") })
+        return (result, await ordered.completed)
     }
 
     @Test("gives identical output for every tile arrival order", arguments: [String?.none, "Alpha"])
@@ -262,12 +260,53 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         var outputs: [SearchResult] = []
         for order in Self.permutations(["a", "b", "c"]) {
             let (result, arrived) = try await Self.run(order, text: text)
-            // The delays did produce this arrival order, so the test exercises what it says it does.
-            #expect(arrived.map(\.absoluteString) == order.map(tileURL))
+            // The transport released the tiles in this order, so the test exercises what it says it does.
+            #expect(arrived == order.map(tileURL))
             outputs.append(result)
         }
         #expect(outputs.allSatisfy { $0 == outputs[0] })
         #expect(outputs[0].places.map { idOf($0.origin) }.sorted() == ["a1", "a2", "b1", "c1", "dup"])
         #expect(outputs[0].places.first { idOf($0.origin) == "dup" }?.place["name"] == .string("Copy A"))
+    }
+}
+
+/// Answers the named URLs one at a time, in `order`: each waits, suspended rather than blocking a thread, until
+/// the one before it has answered. The reference uses timers for this (15 ms apart), which the macOS runner,
+/// running tests in parallel on three cores, does not honour reliably even 100 ms apart.
+private final class OrderedTransport: HTTPTransport, @unchecked Sendable {
+    private actor Turnstile {
+        private var next = 0
+        private var waiting: [Int: CheckedContinuation<Void, Never>] = [:]
+        private(set) var completed: [String] = []
+
+        func wait(for turn: Int) async {
+            if turn == next { return }
+            await withCheckedContinuation { waiting[turn] = $0 }
+        }
+
+        func finish(_ url: String) {
+            completed.append(url)
+            next += 1
+            waiting.removeValue(forKey: next)?.resume()
+        }
+    }
+
+    private let base: any HTTPTransport
+    private let order: [String]
+    private let turnstile = Turnstile()
+
+    init(_ base: any HTTPTransport, order: [String]) {
+        self.base = base
+        self.order = order
+    }
+
+    var completed: [String] { get async { await turnstile.completed } }
+
+    func get(_ url: URL) async throws -> HTTPResponse {
+        guard let turn = order.firstIndex(of: url.absoluteString) else { return try await base.get(url) }
+        await turnstile.wait(for: turn)
+        let response = try await base.get(url)
+        await turnstile.finish(url.absoluteString)
+        return response
     }
 }
