@@ -115,6 +115,12 @@ private func emitted(_ region: Region) async throws -> [String] {
     return server.getTilesRequests.map { param($0, "bbox") ?? "" }
 }
 
+/// The two halves of a crossing region are fetched concurrently (contract §4.2), so the order they reach
+/// the server in is not pinned. Compares sorted, which still catches a missing or repeated request.
+private func emittedInAnyOrder(_ region: Region) async throws -> [String] {
+    try await emitted(region).sorted()
+}
+
 private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map { Double($0)! } }
 
 @Suite("coordinate serialization") struct CoordinateSerialization {
@@ -266,17 +272,17 @@ private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map 
 @Suite("antimeridian") struct Antimeridian {
     @Test("splits a crossing bbox into two getTiles calls")
     func splitsBbox() async throws {
-        #expect(try await emitted(.bbox(minLon: 170, minLat: 10, maxLon: -170, maxLat: 20)) == ["170.00,10.00,180.00,20.00", "-180.00,10.00,-170.00,20.00"])
+        #expect(try await emittedInAnyOrder(.bbox(minLon: 170, minLat: 10, maxLon: -170, maxLat: 20)) == ["170.00,10.00,180.00,20.00", "-180.00,10.00,-170.00,20.00"].sorted())
     }
 
     @Test("splits a circle that wraps past 180")
     func wrapsPast180() async throws {
-        #expect(try await emitted(.circle(lat: 0, lon: 179.5, radius: 111194.927)) == ["178.50,-1.00,180.00,1.00", "-180.00,-1.00,-179.50,1.00"])
+        #expect(try await emittedInAnyOrder(.circle(lat: 0, lon: 179.5, radius: 111194.927)) == ["178.50,-1.00,180.00,1.00", "-180.00,-1.00,-179.50,1.00"].sorted())
     }
 
     @Test("splits a circle that wraps past -180")
     func wrapsPastMinus180() async throws {
-        #expect(try await emitted(.circle(lat: 0, lon: -179.5, radius: 111194.927)) == ["179.50,-1.00,180.00,1.00", "-180.00,-1.00,-178.50,1.00"])
+        #expect(try await emittedInAnyOrder(.circle(lat: 0, lon: -179.5, radius: 111194.927)) == ["179.50,-1.00,180.00,1.00", "-180.00,-1.00,-178.50,1.00"].sorted())
     }
 
     @Test("issues a single call for a non-crossing bbox")
@@ -284,7 +290,7 @@ private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map 
 
     @Test("snaps each half independently")
     func snapsEachHalf() async throws {
-        #expect(try await emitted(.bbox(minLon: 170.123, minLat: 10.123, maxLon: -170.123, maxLat: 20.123)) == ["170.12,10.12,180.00,20.13", "-180.00,10.12,-170.12,20.13"])
+        #expect(try await emittedInAnyOrder(.bbox(minLon: 170.123, minLat: 10.123, maxLon: -170.123, maxLat: 20.123)) == ["170.12,10.12,180.00,20.13", "-180.00,10.12,-170.12,20.13"].sorted())
     }
 
     @Test("merges results from both halves")
