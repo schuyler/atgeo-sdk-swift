@@ -8,18 +8,21 @@ The fixtures are vendored at the commit named in `Tests/AtgeoTests/Fixtures/SOUR
 
 ## JSON parsing
 
-Responses are parsed with `JSONDecoder` into `JSONValue`. Entries below are with `JSONDecoder`, and
-`ToleranceTests` asserts each one on every CI platform: Linux (Swift 6.4.1), current macOS, and macOS 14,
-whose Foundation predates the 2024 rewrite and is what iOS 15-17 and macOS 12-14 run. All three agree.
+Responses are parsed by the port's own parser (`Sources/Atgeo/JSONParser.swift`) into `JSONValue`, so these
+margins are the same on every platform. `ToleranceTests` and `JSONParserTests` assert each one, in every CI
+job that runs the tests. Before this parser the client used `JSONDecoder`, which
+failed a tile on `1e400`, `1e-400` or a lone surrogate and kept the first of duplicate keys.
 
 | Input | This port | Reference (`JSON.parse`) |
 |---|---|---|
-| A number literal that overflows a double (`1e400`) | parse error; inside a tile, the tile counts as failed | `Infinity`; the search carries on |
-| A number literal that underflows (`1e-400`) | parse error; inside a tile, the tile counts as failed | `0` |
-| Duplicate keys (`{"a":1,"a":2}`) | the first value wins | the last value wins |
-| A lone surrogate escape (`"\uD800"`) | parse error; inside a tile, the tile counts as failed | accepted |
-| Two keys that are canonically equivalent (`é` precomposed and decomposed) | merged into one key of `[String: JSONValue]` | kept as two keys |
-| Integers beyond 2^53 | rounded to the nearest double, as in JavaScript (`9007199254740993` → `…992`) | same |
+| A lone surrogate escape (`"\uD800"`) | U+FFFD, since a Swift `String` cannot hold a lone surrogate | the lone code unit, kept |
+| Two keys that are canonically equivalent (`é` precomposed and decomposed) | merged into one key of `[String: JSONValue]`, holding the later value | kept as two keys |
+| Nesting deeper than 512 arrays or objects | parse error; inside a tile, the tile counts as failed | accepted |
+
+Where the two agree, at margins a port might get wrong: a number literal that overflows a double (`1e400`) is
+infinity and one that underflows (`1e-400`) is zero; the last of duplicate keys wins; invalid UTF-8 becomes
+U+FFFD, as the reference's `response.text()` makes it; a leading byte-order mark is skipped; integers beyond
+2^53 round to the nearest double (`9007199254740993` → `…992`).
 
 ## Numbers
 

@@ -171,7 +171,9 @@ There is no persistence; a new client starts cold. The default transport uses an
 
 ## Performance
 
-Decoding tiles is slower than it should be. The client parses every response with `JSONDecoder`, which on Linux takes about 140 ms for an 800 KiB tile, where `JSONSerialization` takes 25 ms and Node's `JSON.parse` takes 3. Decoding runs off the actor, up to 8 tiles at a time, and a cached tile isn't decoded again, but a cold search over big tiles will notice. Apple platforms haven't been measured yet. A hand-written parser is the likely fix.
+The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. On Linux it reads an 810 KiB tile in under 8 ms. `JSONDecoder` took 160 ms on the same tile, and Node's `JSON.parse` takes about 3. Parsing runs off the actor, up to 8 tiles at a time, and a cached tile isn't parsed again.
+
+To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
 
 ## Development
 
@@ -190,7 +192,7 @@ There's also an end-to-end run against a live server, which isn't part of `swift
 ATGEO_SERVER=http://localhost:8000 swift run -c release atgeo-e2e
 ```
 
-It takes the same environment variables as the reference's `scripts/e2e.ts`: `ATGEO_SERVER` (default `http://localhost:8000`), `ATGEO_DATASET` (default `openstreetmap.org`), `ATGEO_COLLECTION` (default none), and `ATGEO_REGION` as `lat,lon,radius` in meters (default `43.0,-71.45,3000`, Manchester, NH). It prints a line per step, exits non-zero on the first failure, and finishes by timing `JSONDecoder` on the largest tile it fetched.
+It takes the same environment variables as the reference's `scripts/e2e.ts`: `ATGEO_SERVER` (default `http://localhost:8000`), `ATGEO_DATASET` (default `openstreetmap.org`), `ATGEO_COLLECTION` (default none), and `ATGEO_REGION` as `lat,lon,radius` in meters (default `43.0,-71.45,3000`, Manchester, NH). It prints a line per step, exits non-zero on the first failure, and finishes by timing the parser on the largest tile it fetched.
 
 ## Server requirements
 

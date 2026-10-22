@@ -10,17 +10,20 @@ public enum JSONValue: Sendable, Hashable, Codable {
     case array([JSONValue])
     case object(JSONObject)
 
+    /// For decoding a `JSONValue` with your own `Decoder`; the client parses responses with its own parser.
     public init(from decoder: any Decoder) throws {
         let container = try decoder.singleValueContainer()
-        // Bool before Double before String, so that `true` is not read as 1 and `1` not as "1".
+        // String first: each failed `try?` throws and discards an error, and most values are strings.
+        // JSONDecoder reads neither a number nor a boolean as a String (JSONValueTests checks it on every CI
+        // platform). Then Bool before Double, so that `true` is not read as 1.
         if container.decodeNil() {
             self = .null
+        } else if let s = try? container.decode(String.self) {
+            self = .string(s)
         } else if let b = try? container.decode(Bool.self) {
             self = .bool(b)
         } else if let d = try? container.decode(Double.self) {
             self = .number(d)
-        } else if let s = try? container.decode(String.self) {
-            self = .string(s)
         } else if let a = try? container.decode([JSONValue].self) {
             self = .array(a)
         } else {
@@ -83,9 +86,10 @@ extension JSONValue {
 }
 
 /// Decodes a response body. Every 2xx body goes through here once, then through the lenient mappers;
-/// nothing decodes a response with a synthesized `Decodable` (design review, addendum B).
+/// nothing decodes a response with a synthesized `Decodable` (design review, addendum B). The parser is the
+/// port's own, so its margins are the same on every platform (CONFORMANCE.md, "JSON parsing").
 func decodeJSON(_ data: Data) throws -> JSONValue {
-    try JSONDecoder().decode(JSONValue.self, from: data)
+    try parseJSON(data)
 }
 
 /// The error for a body that is JSON but has no usable body in contract §1's narrow sense.

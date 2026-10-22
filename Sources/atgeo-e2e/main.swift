@@ -1,7 +1,7 @@
 // End-to-end run against a live garganorn, a port of atgeo-sdk-js `scripts/e2e.ts` (design review note 16).
 // Not part of `swift test`. Run with `swift run atgeo-e2e`, configured by the same environment variables.
-// It also times `JSONDecoder` on the largest tile the search fetched (design review note 12).
-import Atgeo
+// It also times the client's JSON parser on the largest tile the search fetched (design review note 12).
+@_spi(Benchmark) import Atgeo
 import Foundation
 
 let env = ProcessInfo.processInfo.environment
@@ -91,18 +91,18 @@ do {
     check(record.place["name"]?.stringValue == name, "getPlace name \(record.place["name"] ?? .null) is not \(name)")
     log("getPlace", "\(origin) -> \(name)")
 
-    // The decode the client runs on every tile: one JSONDecoder pass into JSONValue. Median of five.
+    // The parse the client runs on every tile, into JSONValue. Median of five.
     guard let largest = await transport.tiles.bodies.max(by: { $0.count < $1.count }) else { fail("no tile fetched") }
     var times: [Double] = []
     var records = 0
     for _ in 0..<5 {
         let start = DispatchTime.now().uptimeNanoseconds
-        let value = try JSONDecoder().decode(JSONValue.self, from: largest)
+        let value = try parseJSON(largest)
         times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
         records = value["records"]?.arrayValue?.count ?? 0
     }
     let median = times.sorted()[2]
-    log("JSONDecoder", "largest tile \(largest.count / 1024) KiB, \(records) records, median \(String(format: "%.1f", median)) ms of 5")
+    log("parseJSON", "largest tile \(largest.count / 1024) KiB, \(records) records, median \(String(format: "%.1f", median)) ms of 5")
 } catch {
     fail("\(error)")
 }

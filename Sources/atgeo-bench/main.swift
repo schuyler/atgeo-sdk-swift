@@ -1,6 +1,6 @@
-// Times JSON parsing of a tile-sized body (design review note 12), including the client's own parser. Not part of `swift test`: run it as
-// `swift run -c release atgeo-bench [tile.json ...]`. With no arguments it times a synthetic tile shaped like
-// an OSM tile from places.atgeo.org; each argument adds a real body read from that file.
+// Times JSON parsing of a tile-sized body, the client's parser against Foundation's (design review note 12).
+// Not in `swift test`: run it as `swift run -c release atgeo-bench [tile.json ...]`. With no arguments it
+// times a synthetic tile shaped like an OSM tile from places.atgeo.org; each argument adds a real body.
 @_spi(Benchmark) import Atgeo
 import Foundation
 
@@ -63,41 +63,6 @@ func jsonValue(_ any: Any) -> JSONValue {
     }
 }
 
-/// `JSONValue`'s decoder with `String` tried first. `JSONValue.init(from:)` tries `Bool`, then `Double`, then
-/// `String`, so each string value, most of a tile, first throws two `DecodingError`s. This times what those
-/// throws cost; it is not what the client runs.
-enum StringFirst: Decodable {
-    case null, bool(Bool), number(Double), string(String), array([StringFirst]), object([String: StringFirst])
-
-    init(from decoder: any Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let s = try? container.decode(String.self) {
-            self = .string(s)
-        } else if container.decodeNil() {
-            self = .null
-        } else if let b = try? container.decode(Bool.self) {
-            self = .bool(b)
-        } else if let d = try? container.decode(Double.self) {
-            self = .number(d)
-        } else if let a = try? container.decode([StringFirst].self) {
-            self = .array(a)
-        } else {
-            self = .object(try container.decode([String: StringFirst].self))
-        }
-    }
-
-    var jsonValue: JSONValue {
-        switch self {
-        case .null: .null
-        case .bool(let b): .bool(b)
-        case .number(let d): .number(d)
-        case .string(let s): .string(s)
-        case .array(let a): .array(a.map(\.jsonValue))
-        case .object(let o): .object(o.mapValues(\.jsonValue))
-        }
-    }
-}
-
 /// Median wall time in milliseconds of `runs` calls, after two untimed ones.
 func median(runs: Int = 15, _ body: () throws -> Void) rethrows -> Double {
     try body()
@@ -126,18 +91,16 @@ let platform = "Linux"
 let platform = ProcessInfo.processInfo.operatingSystemVersionString
 #endif
 print("JSON parsing, \(platform), median ms of 15\n")
-print("| Body | KiB | Records | JSONDecoder → JSONValue | same, String first | JSONSerialization | JSONSerialization → JSONValue | parseJSON |")
-print("|---|---:|---:|---:|---:|---:|---:|---:|")
+print("| Body | KiB | Records | parseJSON | JSONDecoder → JSONValue | JSONSerialization | JSONSerialization → JSONValue |")
+print("|---|---:|---:|---:|---:|---:|---:|")
 for (name, data) in bodies {
     var value = JSONValue.null
     let decoder = try median { value = try JSONDecoder().decode(JSONValue.self, from: data) }
-    let stringFirst = try median { _ = try JSONDecoder().decode(StringFirst.self, from: data) }
     let parser = try median { _ = try parseJSON(data) }
     let serialization = try median { _ = try JSONSerialization.jsonObject(with: data) }
     let converted = try median { _ = jsonValue(try JSONSerialization.jsonObject(with: data)) }
     // The parsers must agree, or the timings compare different work.
     guard jsonValue(try JSONSerialization.jsonObject(with: data)) == value,
-        try JSONDecoder().decode(StringFirst.self, from: data).jsonValue == value,
         try parseJSON(data) == value
     else {
         FileHandle.standardError.write(Data("\(name): the parsers disagree\n".utf8))
@@ -145,5 +108,5 @@ for (name, data) in bodies {
     }
     let records = value["records"]?.arrayValue?.count ?? 0
     let ms = { (t: Double) in String(format: "%.1f", t) }
-    print("| \(name) | \(data.count / 1024) | \(records) | \(ms(decoder)) | \(ms(stringFirst)) | \(ms(serialization)) | \(ms(converted)) | \(ms(parser)) |")
+    print("| \(name) | \(data.count / 1024) | \(records) | \(ms(parser)) | \(ms(decoder)) | \(ms(serialization)) | \(ms(converted)) |")
 }
