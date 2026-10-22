@@ -31,9 +31,7 @@ jobs:
       - uses: actions/checkout@v5
       - run: swift --version
       - run: swift build
-      - run: swift test
-      - name: Benchmark JSON parsing (design review note 12)
-        run: swift run -c release atgeo-bench | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: swift test -c release -Xswiftc -enable-testing --filter ProbeTests 2>&1 | grep -E "PROBE|✘|Test run"
 
   # macOS 14 ships the Foundation that predates the 2024 rewrite (iOS 15-17 and macOS 12-14 run it), so
   # this job is where ToleranceTests measures the old JSONDecoder (design review, step 4 and addendum C).
@@ -45,9 +43,7 @@ jobs:
         run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
       - run: swift --version
       - run: swift build
-      - run: swift test
-      - name: Benchmark JSON parsing (design review note 12)
-        run: swift run -c release atgeo-bench | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: swift test -c release -Xswiftc -enable-testing --filter ProbeTests 2>&1 | grep -E "PROBE|✘|Test run"
 
   # Package.swift claims iOS, tvOS, watchOS and visionOS too; build for each, and run the tests on the
   # iOS simulator. The watchOS device build is the one that matters most: it compiles for arm64_32,
