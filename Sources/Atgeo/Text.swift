@@ -137,3 +137,9 @@ func textScore(query: String, value: JSONObject) -> Double {
     }
     return best
 }
+
+/// Ordinal equality, as JavaScript's `===` on strings. `String ==` is canonical equivalence, under which
+/// for example U+212A KELVIN SIGN equals "K".
+func ordinalEqual(_ a: String, _ b: String) -> Bool {
+    a.utf16.elementsEqual(b.utf16)
+}
