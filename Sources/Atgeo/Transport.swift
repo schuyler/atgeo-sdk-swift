@@ -50,7 +50,11 @@ public struct URLSessionTransport: HTTPTransport {
 
     /// A session of your own may set headers in `httpAdditionalHeaders`; the `User-Agent` and
     /// `Accept-Language` this transport sets on each request take precedence over them.
+    ///
+    /// `maxBodyBytes` must be positive, as in the Kotlin port; a negative cap would fail even an empty body
+    /// on Linux and not on Apple platforms.
     public init(session: URLSession = URLSessionTransport.defaultSession, maxBodyBytes: Int = URLSessionTransport.defaultMaxBodyBytes) {
+        precondition(maxBodyBytes > 0, "maxBodyBytes must be positive")
         self.session = session
         self.maxBodyBytes = maxBodyBytes
     }
