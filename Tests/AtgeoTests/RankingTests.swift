@@ -117,3 +117,18 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
         #expect(!"urn:atgeo:osm:way:\u{301}1".hasPrefix("urn:atgeo:osm:way:"))
     }
 }
+
+/// Port of test/ranking.test.ts: the same fixture, through the client and the fake server.
+@Suite struct RankingThroughTheClientTests {
+    @Test("ranking scenarios", arguments: try scenarios())
+    func scenario(_ s: RankingScenario) async throws {
+        let server = try FakeServer(tilesets: [overture([FakeTile(url: "https://places.atgeo.org/tiles/t0.json", records: s.records)])])
+        let places = try await server.client().searchPlaces(region: s.region, text: s.text, sort: s.sort).places
+        let got = places.compactMap(\.origin)
+        for (k, wanted) in s.top {
+            for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }
+        }
+        for origin in s.absent { #expect(!got.contains(origin), "\(origin) absent from \(got)") }
+        if s.top.isEmpty { #expect(got.isEmpty) }
+    }
+}

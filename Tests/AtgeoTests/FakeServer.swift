@@ -319,3 +319,39 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
         return "unrecognised response \(body.keys.sorted())"
     }
 }
+
+// MARK: - Helpers shared by the client test ports
+
+extension FakeServer {
+    /// A client on this fake, with the fake's server as its base.
+    func client(cacheBudgetBytes: Int = AtgeoClient.defaultCacheBudgetBytes, now: (@Sendable () -> Date)? = nil) -> AtgeoClient {
+        AtgeoClient(server: URL(string: server)!, transport: self, cacheBudgetBytes: cacheBudgetBytes, now: now ?? { Date() })
+    }
+
+    /// The getTiles requests, in order.
+    var getTilesRequests: [URL] { requests.filter { $0.absoluteString.contains("org.atgeo.getTiles") } }
+}
+
+/// A query parameter as URLSearchParams reads it: percent-decoded, `+` as a space.
+func param(_ url: URL, _ name: String) -> String? {
+    URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedQueryItems?
+        .first { $0.name == name }?.value?
+        .replacingOccurrences(of: "+", with: " ").removingPercentEncoding
+}
+
+/// `origin + pathname` of a URL, as the reference tests compare them.
+func originAndPath(_ url: URL) -> String {
+    var c = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+    c.query = nil
+    c.fragment = nil
+    return c.string!
+}
+
+func tileURL(_ name: String) -> String { "https://tiles.example/\(name).json" }
+
+/// A place value without an origin, as the reference's `place(…, { origin: undefined })`.
+func withoutOrigin(_ value: JSONObject) -> JSONObject {
+    var v = value
+    v["origin"] = nil
+    return v
+}

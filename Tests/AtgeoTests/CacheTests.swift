@@ -102,3 +102,171 @@ private func rec(_ origin: String) -> TileRecord { TileRecord(value: ["origin": 
         #expect(cache.get("https://t/\u{E9}") == [])
     }
 }
+
+// MARK: - Port of test/cache.test.ts, through the client
+
+private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let otherOrigin = "urn:atgeo:example.org:thing:shared"
+/// 2026-01-01T00:00:00Z, as the reference sets its fake timers.
+private let start = Date(timeIntervalSince1970: 1_767_225_600)
+
+private func cacheSetup() throws -> FakeServer {
+    try FakeServer(tilesets: [
+        overture([FakeTile(url: tileURL("a"), records: [
+            record(place("a", "Alpha", [point(37.772, -122.412)]), importance: 3),
+            record(place("shared", "Shared in A", [point(37.773, -122.413)]), importance: 2),
+        ])]),
+        FakeTileset(
+            slug: "example-thing",
+            collections: [["dataset": .string("example.org"), "collection": .string("thing")]],
+            tiles: [FakeTile(url: tileURL("o"), records: [
+                record(place("shared", "Shared in other", [point(10, 10)], ["origin": .string(otherOrigin)])),
+            ])]),
+    ])
+}
+
+@Suite("warm regions") struct WarmRegions {
+    @Test("answers an identical second search offline")
+    func offline() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        let first = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        server.goOffline()
+        let second = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        #expect(second == first)
+        #expect(first.places.count > 0)
+    }
+
+    @Test("reuses tiles for a different text over the same region")
+    func differentText() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        _ = try await client.searchPlaces(region: sfRegion)
+        let before = server.requests.count
+        _ = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        #expect(server.requests.count == before)
+    }
+
+    @Test("makes no tile request for a repeated search")
+    func repeated() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion)
+        #expect(server.requestStrings.filter { $0 == tileURL("a") }.count == 1)
+    }
+}
+
+@Suite("tile-list expiry") struct TileListExpiry {
+    @Test("expires after 3600 s and then requires network")
+    func expires() async throws {
+        let clock = TestClock(start)
+        let server = try cacheSetup()
+        let client = server.client(now: clock.closure)
+        _ = try await client.searchPlaces(region: sfRegion)
+        let base = server.requests.count
+        clock.advance(milliseconds: 3_599_000)
+        _ = try await client.searchPlaces(region: sfRegion)
+        #expect(server.requests.count == base)
+        clock.advance(milliseconds: 2_000)
+        _ = try await client.searchPlaces(region: sfRegion)
+        #expect(server.getTilesRequests.count == 2)
+        #expect(server.requestStrings.filter { $0 == tileURL("a") }.count == 1)
+    }
+
+    @Test("fails offline once the tile list has expired")
+    func failsOffline() async throws {
+        let clock = TestClock(start)
+        let server = try cacheSetup()
+        let client = server.client(now: clock.closure)
+        _ = try await client.searchPlaces(region: sfRegion)
+        server.goOffline()
+        clock.advance(milliseconds: 3_601_000)
+        await #expect(throws: (any Error).self) { _ = try await client.searchPlaces(region: sfRegion) }
+    }
+
+    @Test("caches describeService for 3600 s")
+    func describeService() async throws {
+        let clock = TestClock(start)
+        let server = try cacheSetup()
+        let client = server.client(now: clock.closure)
+        _ = try await client.describeService()
+        clock.advance(milliseconds: 3_599_000)
+        _ = try await client.describeService()
+        #expect(server.requests.count == 1)
+        clock.advance(milliseconds: 2_000)
+        _ = try await client.describeService()
+        #expect(server.requests.count == 2)
+    }
+}
+
+@Suite("place(origin:) cache scan") struct PlaceCacheScan {
+    @Test("answers from an already-fetched tile without a request")
+    func fromTile() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        _ = try await client.searchPlaces(region: sfRegion)
+        let before = server.requests.count
+        let found = try await client.place(origin: placeOrigin("a"))
+        #expect(server.requests.count == before)
+        #expect(found == PlaceRecord(origin: placeOrigin("a"), place: place("a", "Alpha", [point(37.772, -122.412)]), importance: 3))
+    }
+
+    @Test("answers offline for a cached origin")
+    func offline() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        _ = try await client.searchPlaces(region: sfRegion)
+        server.goOffline()
+        #expect(try await client.place(origin: placeOrigin("shared")).place["name"] == .string("Shared in A"))
+    }
+
+    @Test("matches the whole origin, not a shared id")
+    func wholeOrigin() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        _ = try await client.searchPlaces(region: sfRegion)
+        let before = server.requests.count
+        let found = try await client.place(origin: otherOrigin)
+        let getPlaces = server.requests.dropFirst(before).filter { $0.path == "/xrpc/org.atgeo.getPlace" }
+        #expect(getPlaces.count == 1)
+        #expect(param(try #require(getPlaces.first), "uri") == otherOrigin)
+        #expect(found.place["name"] == .string("Shared in other"))
+    }
+
+    @Test("returns the copy from the lowest tile URL, although a higher one was cached first")
+    func lowestURL() async throws {
+        let copy = { (name: String) in record(place("x", name, [point(37.775, -122.415)])) }
+        let server = try FakeServer(
+            tilesets: [overture([FakeTile(url: tileURL("a"), records: [copy("Copy A")]), FakeTile(url: tileURL("b"), records: [copy("Copy B")])])],
+            tilesFor: { bbox in .tiles([bbox.hasPrefix("-122") ? tileURL("a") : tileURL("b")]) })
+        let client = server.client()
+        _ = try await client.searchPlaces(region: .bbox(minLon: -100.5, minLat: 10.5, maxLon: -100.4, maxLat: 10.6))
+        #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy B"))
+        _ = try await client.searchPlaces(region: sfRegion)
+        server.goOffline()
+        #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy A"))
+    }
+}
+
+@Suite("cache budget through the client") struct CacheBudget {
+    // No reference counterpart (design review, note 13): the budget is measured in response bytes, and a search
+    // over more tiles than fit evicts the least recently used.
+    @Test func aSmallBudgetEvictsAndTheEvictedTileIsFetchedAgain() async throws {
+        let server = try FakeServer(tilesets: [overture([
+            FakeTile(url: tileURL("a"), records: [record(place("a", "A", [point(37.772, -122.412)]))]),
+            FakeTile(url: tileURL("b"), records: [record(place("b", "B", [point(37.773, -122.413)]))]),
+        ])])
+        let tileA = try await server.get(URL(string: tileURL("a"))!).body.count
+        let client = server.client(cacheBudgetBytes: tileA + 10)
+        let before = server.requests.count
+        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion)
+        // Only one tile fits. First search: a, then b, whose insert evicts a. Second: b is a hit and becomes most
+        // recently used, a is fetched again, and its insert evicts b.
+        let tileB = try await server.get(URL(string: tileURL("b"))!).body.count
+        #expect(tileB <= tileA + 10 && tileA + tileB > tileA + 10)
+        #expect(server.requestStrings.dropFirst(before).filter { $0.hasPrefix("https://tiles.example/") }.dropLast()
+                == [tileURL("a"), tileURL("b"), tileURL("a")])
+    }
+}
