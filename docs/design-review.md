@@ -230,10 +230,9 @@ except `normalize.test.ts`, `similarity.test.ts` and `distance.test.ts` drives `
 fake server, which does not exist until step 7.
 
 The probe code written for this review (normalize with the hand rule, Jaro-Winkler, `queryBboxes` with
-the integer formatter, `distanceTo`, the fixture runner) lives in this session's scratchpad at
-`/tmp/claude-0/-home-user/bacf2527-a7c3-5eef-9605-42b675143a52/scratchpad/probe/` and `probe3/`, and
-disappears with the container. The recipes it transcribes are in the spec and in this document, so if it
-is not preserved, steps 1 to 3 are written from those; that changes the estimate, not the correctness.
+the integer formatter, `distanceTo`, the fixture runner, and the measurements behind addenda A, C and D)
+is kept in `docs/probes/` with a README that says what each file establishes and how to run it.
+`probe.swift` and `sigma2.swift` are the transcriptions steps 1 to 3 start from.
 
 Decisions this plan makes that the spec leaves open or says differently:
 
