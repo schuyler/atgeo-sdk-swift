@@ -17,7 +17,9 @@ private func decode(_ text: String) throws -> JSONValue {
 }
 
 @Suite struct JSONValueTests {
-    @Test("Bool before Double before String", arguments: [
+    // Through the client's parser and through JSONValue's own Decodable conformance, which tries String,
+    // then Bool, then Double: a number or boolean must not come back as a string, nor `true` as 1.
+    @Test("scalars, through both parsers", arguments: [
         ("true", JSONValue.bool(true)),
         ("false", .bool(false)),
         ("1", .number(1)),
@@ -30,6 +32,7 @@ private func decode(_ text: String) throws -> JSONValue {
     ])
     func scalar(text: String, expected: JSONValue) throws {
         #expect(try decode(text) == expected)
+        #expect(try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) == expected)
     }
 
     @Test func negativeZeroKeepsItsSign() throws {
@@ -38,11 +41,13 @@ private func decode(_ text: String) throws -> JSONValue {
     }
 
     @Test func nesting() throws {
-        let v = try decode(#"{"a":[1,true,"x",null,{"b":[]}],"c":{}}"#)
-        #expect(v == .object([
+        let text = #"{"a":[1,true,"x",null,{"b":[]}],"c":{}}"#
+        let expected = JSONValue.object([
             "a": .array([.number(1), .bool(true), .string("x"), .null, .object(["b": .array([])])]),
             "c": .object([:]),
-        ]))
+        ])
+        #expect(try decode(text) == expected)
+        #expect(try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8)) == expected)
     }
 
     @Test func accessors() throws {

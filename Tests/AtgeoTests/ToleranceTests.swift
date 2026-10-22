@@ -203,27 +203,30 @@ private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
     }
 }
 
-/// Addendum C: the parser's behaviour at the margins, as CONFORMANCE.md records it. Runs on every CI
-/// platform, so a Foundation that behaves differently fails here and CONFORMANCE.md is revised from it.
-@Suite("JSONDecoder margins (CONFORMANCE.md)") struct ParserMargins {
-    @Test func overflowingNumberFailsToParse() {
-        #expect(throws: DecodingError.self) { try json("[1e400]") }
+/// Addendum C: the parser's behaviour at the margins, as CONFORMANCE.md records it. The parser is the
+/// port's own (note 12), so these hold on every platform; under JSONDecoder the first four differed.
+@Suite("parser margins (CONFORMANCE.md)") struct ParserMargins {
+    @Test func overflowingNumberIsInfinity() throws {
+        #expect(try json("[1e400]") == .array([.number(.infinity)]))
     }
 
-    @Test func underflowingNumberFailsToParse() {
-        #expect(throws: DecodingError.self) { try json("[1e-400]") }
+    @Test func underflowingNumberIsZero() throws {
+        #expect(try json("[1e-400]") == .array([.number(0)]))
     }
 
-    @Test func duplicateKeysKeepTheFirstValue() throws {
-        #expect(try json(#"{"a":1,"a":2}"#)["a"] == .number(1))
+    @Test func duplicateKeysKeepTheLastValue() throws {
+        #expect(try json(#"{"a":1,"a":2}"#)["a"] == .number(2))
     }
 
-    @Test func loneSurrogateEscapeFailsToParse() {
-        #expect(throws: DecodingError.self) { try json(#"["\uD800"]"#) }
+    @Test func loneSurrogateEscapeBecomesTheReplacementCharacter() throws {
+        #expect(try json(#"["\uD800"]"#) == .array([.string("\u{FFFD}")]))
     }
 
+    // Precomposed and decomposed é: equal as Swift Strings, so one key, holding the later value.
     @Test func canonicallyEquivalentKeysMerge() throws {
-        #expect(try json(#"{"é":1,"é":2}"#).objectValue?.count == 1)
+        let o = try #require(try json(#"{"é":1,"é":2}"#).objectValue)
+        #expect(o.count == 1)
+        #expect(o.values.first == .number(2))
     }
 
     @Test func integersBeyond2To53RoundAsInJavaScript() throws {
@@ -298,6 +301,21 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
             tile: raw(200, #"{"records":[{"value":{"origin":"o","locations":[{"$type":"community.lexicon.location.geo","latitude":[37.775],"longitude":"-122.415"}]}}]}"#),
         ])
         #expect(try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org").places.isEmpty)
+    }
+
+    // Under JSONDecoder, 1e400 anywhere in a tile failed the whole tile; now it is infinity, which the
+    // importance range check makes absent (contract §1), as in the reference.
+    @Test func aTileHoldingAnOverflowingNumberIsUsed() async throws {
+        let tile = tileURL("a")
+        let server = try FakeServer(rawBodies: [
+            getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#),
+            tile: raw(200, #"{"records":[{"value":{"origin":"o","locations":[\#(geoAt)],"extra":1e400},"importance":1e400}]}"#),
+        ])
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org")
+        #expect(result.tiles == .init(fetched: 1, failed: 0))
+        #expect(result.places.map(\.origin) == ["o"])
+        #expect(result.places.first?.importance == nil)
+        #expect(result.places.first?.place["extra"] == .number(.infinity))
     }
 
     @Test("error body fields that are not strings are absent", arguments: [
