@@ -49,7 +49,7 @@ let atgeo = AtgeoClient(
 )
 ```
 
-Point `server` at your own garganorn to run against your own data; see [Server requirements](#server-requirements). `transport` is anything conforming to `HTTPTransport`, a protocol with one method, `get(_ url: URL) async throws -> HTTPResponse`; it's there for tests, proxies, or a `URLSession` of your own (`URLSessionTransport(session:)`). The budget caps the in-memory tile cache (see [Caching](#caching)).
+Point `server` at your own garganorn to run against your own data; see [Server requirements](#server-requirements). `transport` is anything conforming to `HTTPTransport`, a protocol with one method, `get(_ url: URL) async throws -> HTTPResponse`; it's there for tests, proxies, or a `URLSession` of your own (`URLSessionTransport(session:)`). `URLSessionTransport` refuses a response body over 32 MiB, counted after gzip and friends are decoded, since the server picks the tile URLs and a megabyte of gzip can unpack to a gigabyte; the largest real tiles are about 2 MB. A refused tile is a failed tile, and anything else fails like a network error. `maxBodyBytes:` changes the limit. If you bring your own transport, it's yours to cap. The budget caps the in-memory tile cache (see [Caching](#caching)).
 
 `AtgeoClient` is an actor. One client can be shared across tasks, and every call made on it shares its caches.
 
