@@ -43,11 +43,13 @@ made, whatever transport the client has. The check reads the URL twice:
 - As a string, as the Rust and Python ports do: `http` or `https` in any case followed by `://`; the authority
   ending at `/`, `\`, `?` or `#`; a non-empty host with no `%`, a bracketed host of hex digits, `:` and `.` only;
   a port, if any, of digits and at most 65535. No `@` may appear before the first `/`, `?` or `#`, a backslash
-  notwithstanding, since Foundation does not end the authority at a backslash.
+  notwithstanding, since Foundation does not end the authority at a backslash. The authority must gain no
+  delimiter, `%`, bracket, whitespace or control under NFKC, which IDNA applies to a host.
 - As Foundation parses it: `URL(string:)` must succeed, and its `URLComponents` must have an http or https
   scheme, a non-empty host, and no user or password, checked percent-encoded. `URL.user` alone is not enough:
   for `https://h\%FF@x/y` Foundation reads the userinfo `h%5C%FF`, which does not decode, so `URL.user` is nil
-  while `URLSessionTransport` still sends it as `Authorization: Basic`.
+  while `URLSessionTransport` still sends it as `Authorization: Basic`. The URL Foundation would send
+  (`absoluteString`) must pass the string check too, and parse again to the same host and port.
 
 Before this check, every URL `URL(string:)` could parse went to the transport: a relative URL, `file:`, `ftp:`,
 and credentials, which `URLSessionTransport` on Linux sent as `Authorization: Basic` (and `Basic Og==` for an
@@ -61,10 +63,27 @@ whether Apple's URLSession would have read a `file:` tile, and with the check in
 | A backslash ending the authority (`https://h\x/y`) | a failed tile on Linux, where `URL(string:)` returns nil, and on Apple platforms before iOS 17 / macOS 14 | host `h`, the backslash read as `/` |
 | An `@` after a backslash in the authority (`https://h\@x/y`, `https://h\x@y/z`) | a failed tile: Foundation reads what precedes the `@` as a userinfo and the rest as the host | host `h`, the rest of it path |
 | A backslash in the path (`https://h/a\b`) | fetched with it percent-encoded (`/a%5Cb`), on Linux; Apple platforms before iOS 17 / macOS 14 return nil and the tile fails | `/a/b` |
-| A port over 65535, a `%` in the host, a bracketed host that is not hex digits, `:` and `.` | a failed tile, `refused`, as in the reference | refused (an invalid URL) |
+| A port over 65535, or a bracketed host that is not hex digits, `:` and `.` | a failed tile, `refused`, as in the reference | refused (an invalid URL) |
+| A `%` in the host (`https://h%41/x`) | a failed tile, `refused`: Foundation would send the escape as written | decoded and fetched (host `ha`) |
+| `{`, `}`, `"` or `` ` `` in the host | a failed tile, `refused`: `URL(string:)` returns nil on Linux | fetched, and DNS fails it |
+| A non-ASCII character in the authority that NFKC, which IDNA applies, maps to a delimiter, `%`, a bracket, whitespace or a control (`h：8080`, `localhost℀x`, `h％40x`, `h＃x`, `u＠h`, `u﹫h`: U+FF1A, U+2100, U+FF05, U+FF03, U+FF20, U+FE6B) | a failed tile, `refused`. Foundation would map it and send a host or port WHATWG never reads (`localhosta/cx`, port 8080). The URL Foundation would send must also pass the check again and parse to the same host and port | refused |
+| A plain IDN host (`bücher.example`) | fetched in punycode (`xn--bcher-kva.example`) on Linux | punycode |
 | A bracketed host that passes the character check but is not a valid IPv6 address (`http://[1:2]/x`) | sent to the transport, which fails it: a `transport` failure rather than `refused`. A forbidden host code point (`<`, `^`) makes `URL(string:)` return nil on Linux, so that is `refused` | refused |
 | A numeric host WHATWG rewrites (`http://0x7f.1/x`) | sent with the host as written, `0x7f.1`; what the resolver makes of it is the platform's | `127.0.0.1` |
+| A NUL or other C0 control, or a space, at either end of a tile URL | trimmed before the check, as WHATWG does; one inside the URL is percent-encoded by `URL(string:)` on Linux (`?q`, NUL, `z` sent as `?q%00z`) | trimmed; inside, percent-encoded |
 | A tile URL holding a character not allowed raw in a URL (a space, say) | percent-encoded and fetched, on Linux and on Apple platforms from iOS 17 / macOS 14 (Apple's `URL(string:)` encodes invalid characters from those releases on); before them `URL(string:)` returns nil and the tile counts as failed | percent-encoded and fetched |
+
+## Redirects
+
+`URLSessionTransport` declines a redirect to anything but an http or https URL without credentials, checked as
+tile URLs are, and fails the request with `URLError(.redirectToNonExistentLocation)`: a network failure, and in
+a search a `transport` failure. `fetch` refuses the same redirects; before this, URLSession followed
+`Location: http://user:pw@host/` and sent `Authorization: Basic`.
+
+| Case | This port | Reference (`fetch`) |
+|---|---|---|
+| A session the app supplies, on Linux | follows its own redirect policy: FoundationNetworking asks only a session's own delegate about redirects, not the transport's task delegate, so only `defaultSession` carries the check. On Apple platforms the task delegate is asked, so every session has it | refused |
+| `Location: file:///…` on Linux | FoundationNetworking reads it as a path on the current host (`http://host/etc/hostname`) and follows that, which the check allows; it never reads a file | a network failure |
 
 ## Failed tiles
 

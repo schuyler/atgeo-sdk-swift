@@ -39,7 +39,8 @@ public struct URLSessionTransport: HTTPTransport {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
-        return URLSession(configuration: configuration)
+        // FoundationNetworking consults only a session delegate about redirects, not a task delegate.
+        return URLSession(configuration: configuration, delegate: RedirectPolicy(), delegateQueue: nil)
     }()
 
     /// 32 MiB, as the Kotlin port's; the largest tiles places.atgeo.org serves are about 2 MB.
@@ -50,6 +51,11 @@ public struct URLSessionTransport: HTTPTransport {
 
     /// A session of your own may set headers in `httpAdditionalHeaders`; the `User-Agent` and
     /// `Accept-Language` this transport sets on each request take precedence over them.
+    ///
+    /// A redirect to anything but an http or https URL without credentials fails the request with
+    /// `URLError(.redirectToNonExistentLocation)`, as `fetch` refuses it, rather than send a password. On Apple
+    /// platforms that holds for any session; on Linux, where FoundationNetworking asks only a session's own
+    /// delegate about redirects, only for `defaultSession`, and a session of your own follows its own policy.
     ///
     /// `maxBodyBytes` must be positive, as in the Kotlin port; a negative cap would fail even an empty body
     /// on Linux and not on Apple platforms.
@@ -98,7 +104,23 @@ public struct URLSessionTransport: HTTPTransport {
         }
         let response = task.response
         #endif
-        return HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: body)
+        let http = response as? HTTPURLResponse
+        // A redirect the delegate declined comes back as the 3xx itself; it is a network failure, as in fetch.
+        if let http, [301, 302, 303, 307, 308].contains(http.statusCode),
+           let location = http.value(forHTTPHeaderField: "Location"),
+           !isAllowedRedirect(URL(string: location, relativeTo: http.url ?? url)?.absoluteURL) {
+            throw refusedRedirect()
+        }
+        return HTTPResponse(status: http?.statusCode ?? 0, body: body)
+    }
+}
+
+/// Declines a redirect to anything but an http or https URL without credentials, for the default session.
+/// A session the app supplies keeps its own redirect policy on Linux, where only a session delegate is asked.
+private final class RedirectPolicy: NSObject, URLSessionTaskDelegate, Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(isAllowedRedirect(request.url) ? request : nil)
     }
 }
 
@@ -144,6 +166,12 @@ private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked 
 
     var exceeded: Bool { lock.withLock { over } }
 
+    /// Apple platforms ask a task delegate about redirects, so this holds for a session the app supplies too.
+    func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
+        completionHandler(isAllowedRedirect(request.url) ? request : nil)
+    }
+
     func start(_ continuation: CheckedContinuation<Data, any Error>) {
         let finished = lock.withLock { () -> Result<Data, any Error>? in
             if outcome == nil { self.continuation = continuation }
@@ -184,6 +212,21 @@ private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked 
     }
 }
 #endif
+
+/// Whether the default transport follows a redirect: only to an http or https URL without credentials, as
+/// `fetch` does, so that no redirect sends a password or reads a `file:` URL (contract §4.4). URLSession would
+/// send a `Location: http://user:pw@host/` as `Authorization: Basic`.
+private func isAllowedRedirect(_ url: URL?) -> Bool {
+    guard let url else { return false }
+    return tileRequestURL(url.absoluteString) != nil
+}
+
+/// A refused redirect: a network failure, and inside a tile fetch a `transport` failure.
+private func refusedRedirect() -> URLError {
+    URLError(.redirectToNonExistentLocation, userInfo: [
+        NSLocalizedDescriptionKey: "redirect to a URL that is not http or https without credentials",
+    ])
+}
 
 /// RFC 3986 unreserved characters. Everything else in a query name or value is percent-encoded, `+`, `,`
 /// and `:` included; `URLComponents.queryItems` would leave `+` raw, which a form decoder reads as a space.
@@ -228,7 +271,11 @@ func tileRequestURL(_ tile: String) -> URL? {
           let scheme = components.scheme?.lowercased(), scheme == "http" || scheme == "https",
           let host = components.percentEncodedHost, !host.isEmpty,
           components.percentEncodedUser == nil, components.percentEncodedPassword == nil,
-          url.user == nil, url.password == nil
+          url.user == nil, url.password == nil,
+          // Foundation maps a non-ASCII host (IDNA, NFKC), which can turn a character into a delimiter:
+          // `localhost\u{2100}x` becomes host `localhosta/cx`. What it would send must read the same again.
+          isHTTPURL(url.absoluteString), let again = URL(string: url.absoluteString),
+          again.host == url.host, again.port == url.port
     else { return nil }
     return url
 }
@@ -267,6 +314,10 @@ func isHTTPURL(_ url: String) -> Bool {
     let rest = bytes[(end + separator.count)...]
     if rest.prefix(while: { !"/?#".utf8.contains($0) }).contains(UInt8(ascii: "@")) { return false }
     let authority = rest.prefix { !"/\\?#".utf8.contains($0) }
+    // NFKC, which IDNA applies to a host, maps some characters to delimiters (`\u{FF1A}` to `:`, `\u{2100}` to
+    // `a/c`, `\u{FF20}` to `@`); WHATWG then refuses the host, so refuse one that gains any.
+    let mapped = String(decoding: authority, as: UTF8.self).precomposedStringWithCompatibilityMapping
+    if delimiterCount(mapped) != delimiterCount(String(decoding: authority, as: UTF8.self)) { return false }
     let host: ArraySlice<UInt8>
     let afterHost: ArraySlice<UInt8>
     if authority.first == UInt8(ascii: "[") {
@@ -285,6 +336,12 @@ func isHTTPURL(_ url: String) -> Bool {
     guard port.allSatisfy({ (UInt8(ascii: "0")...UInt8(ascii: "9")).contains($0) }) else { return false }
     let value = port.drop { $0 == UInt8(ascii: "0") }
     return value.count < 5 || (value.count == 5 && Array(value).lexicographicallyPrecedes(Array("65536".utf8)))
+}
+
+/// The characters a host cannot hold, or that would end or split it: delimiters, `%`, brackets, whitespace
+/// and controls.
+private func delimiterCount(_ s: String) -> Int {
+    s.unicodeScalars.filter { "/\\?#@:%[]".unicodeScalars.contains($0) || $0.properties.isWhitespace || $0.value < 0x20 || (0x7F...0x9F).contains($0.value) }.count
 }
 
 private func isHexDigit(_ b: UInt8) -> Bool {

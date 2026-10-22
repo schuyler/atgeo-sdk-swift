@@ -197,6 +197,10 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         "https://tiles.example\\%FF@evil.example/a.json",
         "https:/tiles.example/a.json", "https:\\\\tiles.example\\a.json",
         "https://tiles.example:65536/a.json", "https://tiles%2Eexample/a.json", "http://[zz]/a.json",
+        // Non-ASCII that IDNA's NFKC maps to a delimiter, which WHATWG then refuses in a host.
+        "http://localhost\u{2100}x/y", "https://tiles.example\u{FF1A}8080/a.json", "https://tiles.example\u{FF1A}99999/a.json",
+        "https://tiles\u{FF05}40example/a.json", "https://u\u{FF05}3Apw\u{FF05}40evil.example/a.json",
+        "https://tiles.example\u{FF03}x/a.json", "https://u\u{FF20}tiles.example/a.json", "https://u\u{FE6B}tiles.example/a.json",
         "https:tiles.example/a.json", "https:///a.json",
     ])
     func refused(_ tile: String) async throws {
@@ -215,6 +219,22 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tile])
+    }
+
+    @Test("refuses a host NFKC maps to a delimiter in the string check alone")
+    func nfkc() {
+        for bad in ["http://localhost\u{2100}x/y", "https://h\u{FF1A}8080/y", "https://h\u{FF05}40x/y", "https://h\u{FF03}x/y",
+                    "https://u\u{FF20}h/x", "https://u\u{FE6B}h/x"] {
+            #expect(!isHTTPURL(bad), "\(bad)")
+        }
+        #expect(isHTTPURL("https://b\u{FC}cher.example/x"))
+    }
+
+    @Test("fetches an IDN host in punycode, as before")
+    func idn() async throws {
+        let server = try FakeServer(tilesFor: { _ in .tiles(["https://b\u{FC}cher.example/a.json"]) })
+        _ = try await server.client().searchPlaces(region: sfRegion)
+        #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == ["https://xn--bcher-kva.example/a.json"])
     }
 
     @Test("fetches a URL with surrounding spaces and controls trimmed, as fetch does")

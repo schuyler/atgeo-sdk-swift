@@ -50,6 +50,30 @@ import Testing
         }
     }
 
+    /// `fetch` refuses a redirect to a URL with credentials or to anything but http or https; URLSession would
+    /// follow one and send the credentials as `Authorization: Basic`.
+    /// (`Location: file:///etc/hostname` is not here: FoundationNetworking reads it as a path on the same host,
+    /// `http://127.0.0.1:PORT/etc/hostname`, and follows that; CONFORMANCE.md.)
+    @Test(arguments: ["http://user:pw@127.0.0.1:PORT/final", "http://@127.0.0.1:PORT/final", "ftp://127.0.0.1:PORT/final",
+                      "http://u%FF@127.0.0.1:PORT/final"])
+    func aRedirectToARefusedURLIsANetworkFailure(_ location: String) async throws {
+        let port = PortHolder()
+        let server = try Loopback { request in
+            request.path == "/start"
+                ? .init(status: 302, headers: [("Location", location.replacingOccurrences(of: "PORT", with: "\(port.value)"))])
+                : .init(status: 200, body: Data("{}".utf8))
+        }
+        port.value = server.port
+        do {
+            let response = try await transport.get(server.url("/start"))
+            Issue.record("expected a network failure, got \(response.status) \(String(decoding: response.body, as: UTF8.self).prefix(80))")
+        } catch {
+            #expect((error as? URLError)?.code == .redirectToNonExistentLocation, "\(error)")
+        }
+        #expect(server.received.map(\.path) == ["/start"], "\(server.received.map(\.path))")
+        #expect(server.received.allSatisfy { !$0.headers.contains { $0.name.lowercased() == "authorization" } })
+    }
+
     @Test func cancellingTheTaskAbortsAHeldRequest() async throws {
         let server = try Loopback { _ in .init(status: 200, body: Data("{}".utf8), hold: true) }
         let transport = self.transport
@@ -141,5 +165,14 @@ import Testing
     func stripsTrailingSlashes(server: String, base: String) throws {
         #expect(xrpcBase(try #require(URL(string: server))) == base)
         #expect(try #require(xrpcURL(base: xrpcBase(URL(string: server)!), nsid: "n", [])).absoluteString == "\(base)/xrpc/n")
+    }
+}
+
+private final class PortHolder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var port: UInt16 = 0
+    var value: UInt16 {
+        get { lock.withLock { port } }
+        set { lock.withLock { port = newValue } }
     }
 }
