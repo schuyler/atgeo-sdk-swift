@@ -75,10 +75,11 @@ func gzipOfZeros(_ count: Int) -> Data {
         let server = try Loopback { _ in
             .init(status: 200, headers: [("Content-Encoding", "gzip")], body: bomb, trickle: (bytes: 4096, pause: 0.005))
         }
-        await expectOverCap { _ = try await URLSessionTransport().get(server.url("/bomb")) }
+        // A 4 MiB cap rather than the default, to keep the read short in a debug build.
+        await expectOverCap { _ = try await URLSessionTransport(maxBodyBytes: 4 << 20).get(server.url("/bomb")) }
         let sent = try #require(await server.waitForBodySent())
         #expect(!sent.complete)
-        // 32 MiB is a quarter of the decoded body; allow for what was in flight when the task was cancelled.
+        // 4 MiB is a 32nd of the decoded body; allow generously for what was in flight at the cancel.
         #expect(sent.bytes < bomb.count / 2, "sent \(sent.bytes) of \(bomb.count)")
     }
 

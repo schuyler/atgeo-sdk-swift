@@ -51,24 +51,41 @@ public struct URLSessionTransport: HTTPTransport {
     public func get(_ url: URL) async throws -> HTTPResponse {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let tooLarge = URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
+        #if canImport(FoundationNetworking)
+        // FoundationNetworking has no bytes(for:); it does call a task delegate given to data(for:delegate:).
         let limit = BodyLimit(maxBodyBytes)
         let body: Data, response: URLResponse
         do {
             (body, response) = try await session.data(for: request, delegate: limit)
         } catch where limit.exceeded {
-            throw URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
+            throw tooLarge
         }
         // The delegate's cancel can land after the last byte has arrived, so the body is checked too.
-        if limit.exceeded || body.count > maxBodyBytes {
-            throw URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
+        if limit.exceeded || body.count > maxBodyBytes { throw tooLarge }
+        #else
+        // Apple platforms do not pass the body to data(for:delegate:)'s delegate, so the body is streamed.
+        let (bytes, response) = try await session.bytes(for: request)
+        var buffer: [UInt8] = []
+        buffer.reserveCapacity(Int(min(max(response.expectedContentLength, 0), Int64(maxBodyBytes))))
+        for try await byte in bytes {
+            if buffer.count == maxBodyBytes {
+                bytes.task.cancel()
+                throw tooLarge
+            }
+            buffer.append(byte)
         }
+        let body = Data(buffer)
+        #endif
         return HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: body)
     }
 }
 
+#if canImport(FoundationNetworking)
+
 /// Counts a task's body as it arrives, decoded, and cancels the task once it passes the limit, so that an
 /// oversized body is not read to the end. A task delegate, not a session one, so that it works on a session
-/// the app supplies; on Linux, FoundationNetworking calls a task delegate only for `data(for:delegate:)`.
+/// the app supplies; FoundationNetworking calls a task delegate only for `data(for:delegate:)`.
 private final class BodyLimit: NSObject, URLSessionDataDelegate, @unchecked Sendable {
     private let limit: Int
     private let lock = NSLock()
@@ -88,6 +105,7 @@ private final class BodyLimit: NSObject, URLSessionDataDelegate, @unchecked Send
         if cancel { dataTask.cancel() }
     }
 }
+#endif
 
 /// RFC 3986 unreserved characters. Everything else in a query name or value is percent-encoded, `+`, `,`
 /// and `:` included; `URLComponents.queryItems` would leave `+` raw, which a form decoder reads as a space.
