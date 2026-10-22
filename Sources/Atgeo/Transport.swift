@@ -43,7 +43,10 @@ public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
     private let maxBodyBytes: Int
 
+    /// `maxBodyBytes` must be positive, as in the Kotlin port; a negative cap would fail even an empty body
+    /// on Linux and not on Apple platforms.
     public init(session: URLSession = URLSessionTransport.defaultSession, maxBodyBytes: Int = URLSessionTransport.defaultMaxBodyBytes) {
+        precondition(maxBodyBytes > 0, "maxBodyBytes must be positive")
         self.session = session
         self.maxBodyBytes = maxBodyBytes
     }
