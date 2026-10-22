@@ -10,6 +10,7 @@ let package = Package(
     targets: [
         .target(name: "Atgeo"),
         .executableTarget(name: "atgeo-e2e", dependencies: ["Atgeo"]),
+        .executableTarget(name: "atgeo-bench", dependencies: ["Atgeo"]),
         .testTarget(
             name: "AtgeoTests",
             dependencies: ["Atgeo"],
