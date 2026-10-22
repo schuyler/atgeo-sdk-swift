@@ -30,6 +30,10 @@ private func code(_ body: () async throws -> Void) async -> String? {
     do { try await body(); return nil } catch let e as AtgeoError { return e.code } catch { return "not AtgeoError: \(error)" }
 }
 
+private func status(_ body: () async throws -> Void) async -> Int? {
+    do { try await body(); return nil } catch let e as AtgeoError { return e.status } catch { return nil }
+}
+
 @Suite("failed tiles") struct FailedTiles {
     @Test("reports a complete search")
     func complete() async throws {
@@ -76,6 +80,19 @@ private func code(_ body: () async throws -> Void) async -> String? {
     func bboxTooLarge() async throws {
         let server = try FakeServer(tilesFor: { _ in .error(code: "BboxTooLarge", message: "bbox too large") })
         #expect(await code { _ = try await server.client().searchPlaces(region: sfRegion) } == "BboxTooLarge")
+        #expect(await status { _ = try await server.client().searchPlaces(region: sfRegion) } == 400)
+    }
+
+    @Test("carries the HTTP status, whatever the body says", arguments: [
+        (404, #"{"error":"PlaceNotFound"}"#),
+        (429, ""),
+        (503, #"{"error":"InvalidRequest","message":"a 5xx with a 4xx-sounding code"}"#),
+    ])
+    func carriesStatus(status expected: Int, body: String) async throws {
+        let server = try FakeServer(rawBodies: [
+            "\(defaultServer)/xrpc/org.atgeo.getPlace": HTTPResponse(status: expected, body: Data(body.utf8)),
+        ])
+        #expect(await status { _ = try await server.client().place(origin: placeOrigin("x")) } == expected)
     }
 
     @Test("surfaces CollectionNotFound from getTiles")

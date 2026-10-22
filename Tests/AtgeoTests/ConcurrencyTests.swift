@@ -76,7 +76,7 @@ private final class Counter: @unchecked Sendable {
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             tilesFor: { _ in calls.next() == 1 ? .error(code: "InternalServerError", message: "try again") : .tiles([tile]) })
         let c = server.client()
-        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again")) { _ = try await c.searchPlaces(region: sf) }
+        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again", status: 400)) { _ = try await c.searchPlaces(region: sf) }
         let result = try await c.searchPlaces(region: sf)
         #expect(server.getTilesRequests.count == 2)
         #expect(result.places.count == 1)

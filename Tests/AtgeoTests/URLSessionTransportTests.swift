@@ -15,14 +15,14 @@ import Testing
             .init(status: 400, headers: [("Content-Type", "application/json")],
                   body: Data(#"{"error":"BboxTooLarge","message":"bbox too large"}"#.utf8))
         }
-        await #expect(throws: AtgeoError(code: "BboxTooLarge", message: "bbox too large")) {
+        await #expect(throws: AtgeoError(code: "BboxTooLarge", message: "bbox too large", status: 400)) {
             _ = try await fetchBody(transport, server.url("/xrpc/org.atgeo.getTiles"))
         }
     }
 
     @Test func a4xxWithAnEmptyBodyIsAnHttpError() async throws {
         let server = try Loopback { _ in .init(status: 404) }
-        await #expect(throws: AtgeoError(code: "HttpError", message: "HTTP 404")) {
+        await #expect(throws: AtgeoError(code: "HttpError", message: "HTTP 404", status: 404)) {
             _ = try await fetchBody(transport, server.url("/missing"))
         }
     }

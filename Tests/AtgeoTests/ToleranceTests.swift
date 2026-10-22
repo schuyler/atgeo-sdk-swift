@@ -122,11 +122,11 @@ private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
         ("<html>", "HttpError", "HTTP 400"),
     ])
     func errorBody(body: String, code: String, message: String) {
-        #expect(atgeoError(status: 400, body: Data(body.utf8)) == AtgeoError(code: code, message: message))
+        #expect(atgeoError(status: 400, body: Data(body.utf8)) == AtgeoError(code: code, message: message, status: 400))
     }
 
     @Test func unknownCodesPassThrough() {
-        #expect(atgeoError(status: 503, body: Data(#"{"error":"SomethingNew"}"#.utf8)) == AtgeoError(code: "SomethingNew", message: "HTTP 503"))
+        #expect(atgeoError(status: 503, body: Data(#"{"error":"SomethingNew"}"#.utf8)) == AtgeoError(code: "SomethingNew", message: "HTTP 503", status: 503))
     }
 }
 
@@ -325,7 +325,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     ])
     func errorBody(body: String, code: String, message: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(400, body)])
-        await #expect(throws: AtgeoError(code: code, message: message)) { _ = try await server.client().searchPlaces(region: sf) }
+        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf) }
     }
 
     @Test("a getPlace body with no record object is a decoding error", arguments: ["null", "{}", #"{"uri":"u","record":null}"#, #"{"uri":"u","record":"x"}"#])
