@@ -81,3 +81,9 @@ struct TtlCache<Value> {
         entries[OrdinalKey(key)] = (value, now().addingTimeInterval(ttl))
     }
 }
+
+/// The client's whole per-tile parse, body to the records a search reads, for atgeo-bench. Returns the
+/// record count.
+@_spi(Benchmark) public func benchmarkParseTile(_ body: Data) throws -> Int {
+    try tileRecords(decodeJSON(body)).count
+}
