@@ -14,17 +14,6 @@ private func normalizeCases() throws -> [NormalizeCase] {
     }
 }
 
-/// The six cases the upstream fixture gains in schuyler/atgeo-sdk-js#14 (contract §7). Kept here until
-/// `Fixtures/SOURCE` is re-pinned past that PR, then deleted (plan step 9).
-private let finalSigmaCases = [
-    NormalizeCase(input: "ΟΔΟΣ", expected: "οδος"),
-    NormalizeCase(input: "Ὀδυσσεύς", expected: "οδυσσευς"),
-    NormalizeCase(input: "Α.Σ.", expected: "α.ς."),
-    NormalizeCase(input: "ΑΣ.Α", expected: "ασ.α"),
-    NormalizeCase(input: "İstanbul", expected: "istanbul"),
-    NormalizeCase(input: "ẞ", expected: "ß"),
-]
-
 @Suite struct NormalizeTests {
     // Compared by UTF-16 code units: `String ==` is canonical equivalence and would pass a port that skipped NFKD.
     @Test(arguments: try normalizeCases())
@@ -32,13 +21,8 @@ private let finalSigmaCases = [
         #expect(Array(normalize(c.input).utf16) == Array(c.expected.utf16))
     }
 
-    @Test(arguments: finalSigmaCases)
-    func finalSigma(_ c: NormalizeCase) {
-        #expect(Array(normalize(c.input).utf16) == Array(c.expected.utf16))
-    }
-
     @Test func fixtureIsTheVendoredOne() throws {
-        #expect(try normalizeCases().count == 30)
+        #expect(try normalizeCases().count == 36)
     }
 
     @Test func lowercaseSigmaInTheInputIsLeftAlone() {

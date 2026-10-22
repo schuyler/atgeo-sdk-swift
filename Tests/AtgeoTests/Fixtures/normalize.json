@@ -118,5 +118,29 @@
   {
     "input": "　東京　",
     "expected": "東京"
+  },
+  {
+    "input": "ΟΔΟΣ",
+    "expected": "οδος"
+  },
+  {
+    "input": "Ὀδυσσεύς",
+    "expected": "οδυσσευς"
+  },
+  {
+    "input": "Α.Σ.",
+    "expected": "α.ς."
+  },
+  {
+    "input": "ΑΣ.Α",
+    "expected": "ασ.α"
+  },
+  {
+    "input": "İstanbul",
+    "expected": "istanbul"
+  },
+  {
+    "input": "ẞ",
+    "expected": "ß"
   }
 ]

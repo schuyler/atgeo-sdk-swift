@@ -33,4 +33,5 @@ whose Foundation predates the 2024 rewrite and is what iOS 15-17 and macOS 12-14
 ## Unicode skew
 
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode
-version differences between Foundation builds. None so far.
+version differences between Foundation builds. None: all 36 cases, at the pinned commit, pass on every
+CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbreviations, `İ` and `ẞ`.
