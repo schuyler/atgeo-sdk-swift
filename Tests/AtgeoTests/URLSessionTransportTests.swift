@@ -41,6 +41,13 @@ import Testing
         let body = try await fetchBody(transport, server.url("/start"))
         #expect(body == Data(#"{"tiles":[]}"#.utf8))
         #expect(server.received.map(\.path) == ["/start", "/final"])
+        // The redirected request carries the transport's headers too, not URLSession's own (contract §12, item 5).
+        for request in server.received {
+            let agent = request.headers.filter { $0.name.lowercased() == "user-agent" }.map(\.value)
+            let language = request.headers.filter { $0.name.lowercased() == "accept-language" }.map(\.value)
+            #expect(agent == ["atgeo-client-swift"], "\(request.path)")
+            #expect(language == ["*"], "\(request.path)")
+        }
     }
 
     @Test func cancellingTheTaskAbortsAHeldRequest() async throws {
@@ -74,7 +81,7 @@ import Testing
         #expect(accept == ["application/json"])
         let agent = request.headers.filter { $0.name.lowercased() == "user-agent" }.map(\.value)
         #expect(agent == ["atgeo-client-swift"])
-        // Replaces the locale-derived one URLSession would add (en-US,en;q=0.9 on the CI's macOS).
+        // Replaces the locale-derived one URLSession would add (en-US,en;q=0.9 on Apple CI runners, en on Linux).
         let language = request.headers.filter { $0.name.lowercased() == "accept-language" }.map(\.value)
         #expect(language == ["*"])
         for (name, value) in request.headers {

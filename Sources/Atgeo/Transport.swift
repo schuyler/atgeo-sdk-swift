@@ -20,7 +20,7 @@ public protocol HTTPTransport: Sendable {
     func get(_ url: URL) async throws -> HTTPResponse
 }
 
-/// Sent in place of URLSession's own, which on Apple platforms is `<app> (<build>) CFNetwork/<version>
+/// Sent in place of URLSession's own, which on Apple platforms is `<app>/<build> CFNetwork/<version>
 /// Darwin/<version>`: it names the app and gives away the OS version (contract §12, item 5).
 let userAgent = "atgeo-client-swift"
 
@@ -40,6 +40,8 @@ public struct URLSessionTransport: HTTPTransport {
 
     private let session: URLSession
 
+    /// A session of your own may set headers in `httpAdditionalHeaders`; the `User-Agent` and
+    /// `Accept-Language` this transport sets on each request take precedence over them.
     public init(session: URLSession = URLSessionTransport.defaultSession) {
         self.session = session
     }
