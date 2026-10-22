@@ -123,13 +123,20 @@ private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked 
     private var body = Data()
     private var over = false
     private var continuation: CheckedContinuation<Data, any Error>?
+    /// The task's outcome, when it finished before `start`: a task cancelled before it was resumed, as one is
+    /// when its Swift task was already cancelled, can complete before the continuation is handed over.
+    private var outcome: Result<Data, any Error>?
 
     init(_ limit: Int) { self.limit = limit }
 
     var exceeded: Bool { lock.withLock { over } }
 
     func start(_ continuation: CheckedContinuation<Data, any Error>) {
-        lock.withLock { self.continuation = continuation }
+        let finished = lock.withLock { () -> Result<Data, any Error>? in
+            if outcome == nil { self.continuation = continuation }
+            return outcome
+        }
+        if let finished { continuation.resume(with: finished) }
     }
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
@@ -148,10 +155,17 @@ private final class BodyCollector: NSObject, URLSessionDataDelegate, @unchecked 
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: (any Error)?) {
         let (continuation, result) = lock.withLock { () -> (CheckedContinuation<Data, any Error>?, Result<Data, any Error>) in
+            let result: Result<Data, any Error>
+            if over {
+                result = .failure(URLError(.dataLengthExceedsMaximum))
+            } else if let error {
+                result = .failure(error)
+            } else {
+                result = .success(body)
+            }
             defer { self.continuation = nil }
-            if over { return (self.continuation, .failure(URLError(.dataLengthExceedsMaximum))) }
-            if let error { return (self.continuation, .failure(error)) }
-            return (self.continuation, .success(body))
+            if self.continuation == nil { outcome = result }
+            return (self.continuation, result)
         }
         continuation?.resume(with: result)
     }

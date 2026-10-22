@@ -6,7 +6,7 @@ import Testing
 @testable import Atgeo
 
 /// A gzip member holding `count` ASCII zeros: a fixed-Huffman deflate block of one literal and then matches of
-/// 258 bytes at distance 1, 13 bits each, so about 2,500 to 1. Built here because Foundation has no zlib.
+/// 258 bytes at distance 1, 13 bits each, so about 160 to 1. Built here because Foundation has no zlib.
 func gzipOfZeros(_ count: Int) -> Data {
     var out: [UInt8] = [0x1F, 0x8B, 8, 0, 0, 0, 0, 0, 0, 0xFF]
     var bits: UInt64 = 0, used = 0

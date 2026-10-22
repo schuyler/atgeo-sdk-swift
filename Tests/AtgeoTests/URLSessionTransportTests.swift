@@ -64,6 +64,28 @@ import Testing
         }
     }
 
+    /// A task already cancelled when the request starts: the transport cancels it before resuming it, and
+    /// the task's completion can then arrive before the transport is waiting for it.
+    @Test func aTaskCancelledBeforeTheRequestFailsWithoutHanging() async throws {
+        let server = try Loopback { _ in .init(status: 200, body: Data("{}".utf8), hold: true) }
+        let transport = self.transport
+        let task = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await transport.get(server.url("/held"))
+        }
+        let watchdog = Task.detached { try await Task.sleep(nanoseconds: 5_000_000_000); server.release() }
+        let result = await task.result
+        watchdog.cancel()
+        server.release()
+        switch result {
+        case .success(let response):
+            Issue.record("expected cancellation, got status \(response.status)")
+        case .failure(let error):
+            let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+            #expect(cancelled, "got \(error)")
+        }
+    }
+
     @Test func sendsAcceptJSONAndNothingFromTheRequest() async throws {
         let marker = "zanzibar-quokka-7749295"
         let server = try Loopback { _ in .init(status: 200) }
