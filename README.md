@@ -187,7 +187,7 @@ There is no persistence; a new client starts cold. The default transport uses an
 
 ## Performance
 
-The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor, up to 8 tiles at a time, and a cached tile isn't parsed again.
+The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor: a fetched tile as it arrives, with at most 8 fetches in flight, and a cached tile that isn't among the latest search's parsed tiles alongside them (see Caching, above).
 
 To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`, and measures the tile cache's memory and a search over a warm region; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
 
