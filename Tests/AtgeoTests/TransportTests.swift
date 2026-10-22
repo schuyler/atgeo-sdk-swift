@@ -155,3 +155,88 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         #expect(server.requestStrings.contains("\(base)/tiles/a.json"))
     }
 }
+
+// Contract §4.4: a tile URL that is not an absolute http or https URL, or that carries credentials, is a failed
+// tile with no request. Before the check, every one of these reached the transport (the fake records them);
+// the default transport on Linux threw URLError(.unsupportedURL) for file: and ftp:, and sent the credentials
+// as Authorization: Basic, an empty userinfo as `Basic Og==`.
+@Suite("refused tile URLs") struct RefusedTileURLs {
+    @Test("reads http and https URLs as the Rust and Python ports do")
+    func classifies() {
+        for ok in ["https://h", "HTTP://h/x", "hTtPs://h/x", "http://h:80/x@y", "http://[::1]:8000/x", "https://h?q",
+                   "https://h#f", "https://h\\@x/y"] {
+            #expect(isHTTPURL(ok), "\(ok)")
+        }
+        for bad in ["", "h/x", "/x", "x.json", "ftp://h/x", "file:///etc/passwd", "https:///x", "https://", "http://u@/x",
+                    "https:h", "http://[]/x", "http://:80/x", "javascript://h/x", "httpx://h/x", " https://h/x",
+                    "http://u:p@h:80/x", "https://u@h/x", "https://:p@h", "https://@h/x", "https://u:p@[::1]/x"] {
+            #expect(!isHTTPURL(bad), "\(bad)")
+        }
+    }
+
+    @Test("trims as WHATWG URL parsing does")
+    func trims() {
+        #expect(trimmedLikeWHATWG(" \u{0}\t https://h/x \n\u{1F}") == "https://h/x")
+        #expect(trimmedLikeWHATWG("https://h/\ta\nb\rc") == "https://h/abc")
+        #expect(trimmedLikeWHATWG("https://h/a b") == "https://h/a b")
+        #expect(trimmedLikeWHATWG(" \u{1} ") == "")
+    }
+
+    @Test("fails the tile without a request", arguments: [
+        "/tiles/a.json", "a.json", "file:///etc/hostname", "ftp://tiles.example/a.json",
+        "https://user:pw@tiles.example/a.json", "https://user@tiles.example/a.json", "https://@tiles.example/a.json",
+        "HTTPS://user:pw@tiles.example/a.json", "https://u:p@[::1]:8000/a.json",
+        // Foundation reads this as user `tiles.example\` at host evil.example; WHATWG as host tiles.example.
+        "https://tiles.example\\@evil.example/a.json",
+        "https:tiles.example/a.json", "https:///a.json",
+    ])
+    func refused(_ tile: String) async throws {
+        let server = try FakeServer(tilesFor: { _ in .tiles([tile, tileURL("a")]) })
+        let result = try await server.client().searchPlaces(region: sfRegion)
+        #expect(result.tiles == .init(fetched: 0, failed: 2))   // the fake has no tile a
+        #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tileURL("a")])
+    }
+
+    @Test("fetches an uppercase scheme and an IPv6 host", arguments: ["HTTPS://tiles.example/a.json", "http://[::1]:8000/a.json"])
+    func accepted(_ tile: String) async throws {
+        let server = try FakeServer(tilesets: [overture([
+            FakeTile(url: tile, records: [record(place("a", "A", [point(37.772, -122.412)]))]),
+        ])])
+        let result = try await server.client().searchPlaces(region: sfRegion)
+        #expect(result.tiles == .init(fetched: 1, failed: 0))
+        #expect(result.places.map(\.origin) == [placeOrigin("a")])
+        #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tile])
+    }
+
+    @Test("fetches a URL with surrounding spaces and controls trimmed, as fetch does")
+    func trimmedFetch() async throws {
+        let server = try FakeServer(tilesFor: { _ in .tiles([" \t\(tileURL("a"))\n"]) })
+        _ = try await server.client().searchPlaces(region: sfRegion)
+        #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tileURL("a")])
+    }
+
+    @Test("sends no credentials through the default transport")
+    func defaultTransport() async throws {
+        let ports = PortBox()
+        let server = try Loopback { request in
+            guard request.path.contains("getTiles") else { return .init(status: 200, body: Data(#"{"records":[]}"#.utf8)) }
+            let p = ports.port
+            let tiles = ["http://user:pw@127.0.0.1:\(p)/cred.json", "http://@127.0.0.1:\(p)/empty.json", "http://127.0.0.1:\(p)/ok.json"]
+            return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": tiles]))
+        }
+        ports.port = server.port
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion)
+        #expect(result.tiles == .init(fetched: 1, failed: 2))
+        #expect(server.received.filter { !$0.path.contains("/xrpc/") }.map(\.path) == ["/ok.json"])
+        #expect(server.received.allSatisfy { !$0.headers.contains { $0.name.lowercased() == "authorization" } })
+    }
+}
+
+private final class PortBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: UInt16 = 0
+    var port: UInt16 {
+        get { lock.withLock { value } }
+        set { lock.withLock { value = newValue } }
+    }
+}

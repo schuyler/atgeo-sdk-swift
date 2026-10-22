@@ -165,7 +165,8 @@ public actor AtgeoClient {
                     }
                     group.addTask {
                         do {
-                            guard let u = URL(string: url) else { throw URLError(.badURL) }
+                            // Checked here, before any transport sees the URL (contract §4.4).
+                            guard let u = tileRequestURL(url) else { throw refusedTileURL() }
                             let body = try await fetchBody(transport, u)
                             // Parsed here, in the child, so the actor is not held while it runs.
                             let (records, keys) = try parseTile(body)

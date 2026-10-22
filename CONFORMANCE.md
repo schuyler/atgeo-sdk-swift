@@ -35,11 +35,23 @@ U+FFFD, as the reference's `response.text()` makes it; a leading byte-order mark
 
 ## Tile URLs
 
-Tile URLs are fetched as `getTiles` returns them, through `URL(string:)`, whose handling of characters that
-are not allowed raw in a URL depends on the Foundation it runs on.
+Before any transport sees a tile URL, the client trims it as WHATWG URL parsing does (leading and trailing C0
+controls and spaces removed, tab, LF and CR dropped) and checks it (`tileRequestURL` in
+`Sources/Atgeo/Transport.swift`, contract §4.4): it must be an absolute `http` or `https` URL, scheme in any
+case, with a non-empty host and no credentials, both as the string reads (the authority ends at `/`, `\`, `?`
+or `#`, as in the Rust and Python ports) and as `URL(string:)` parses it. Anything else is a failed tile, with
+no request made, whatever transport the client has. Before this check, every URL `URL(string:)` could parse went
+to the transport: a relative URL, `file:`, `ftp:`, and credentials, which `URLSessionTransport` on Linux sent as
+`Authorization: Basic` (and `Basic Og==` for an empty userinfo). On Linux it threw `URLError(.unsupportedURL)` for
+`file:` and `ftp:`; whether Apple's URLSession would have read a `file:` tile was never established, and no
+longer matters.
 
 | Input | This port | Reference (`fetch`) |
 |---|---|---|
+| An empty userinfo (`https://@h/x`, `https://:@h/x`) | a failed tile: any `@` before the host is refused, as in the Rust and Python ports, which contract §4.4 allows since a compliant server never sends one. It carries no credentials, but FoundationNetworking would send it as `Authorization: Basic Og==` | the userinfo dropped, the URL fetched |
+| An http(s) URL without its slashes (`https:h/x`) | a failed tile | `https://h/x` |
+| A backslash ending the authority (`https://h\x/y`, `https://h\@x/y`) | a failed tile. On Linux `URL(string:)` returns nil for the first and reads the second as user `h\` at host `x`, so it disagrees with the string check and the URL is refused; Apple platforms before iOS 17 / macOS 14 return nil for both | host `h`, the backslash read as `/` |
+| A backslash in the path (`https://h/a\b`) | fetched with it percent-encoded (`/a%5Cb`), on Linux; Apple platforms before iOS 17 / macOS 14 return nil and the tile fails | `/a/b` |
 | A tile URL holding a character not allowed raw in a URL (a space, say) | percent-encoded and fetched, on Linux and on Apple platforms from iOS 17 / macOS 14 (Apple's `URL(string:)` encodes invalid characters from those releases on); before them `URL(string:)` returns nil and the tile counts as failed | percent-encoded and fetched |
 
 ## Unicode skew

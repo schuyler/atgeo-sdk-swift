@@ -212,6 +212,60 @@ func xrpcURL(base: String, nsid: String, _ params: [(name: String, value: String
     return components.url
 }
 
+/// The URL a tile is fetched from, or nil when contract §4.4 refuses it: a failed tile, with no request made.
+///
+/// The tile URL is first trimmed as WHATWG URL parsing (the reference's `fetch`) trims it: leading and
+/// trailing C0 controls and spaces removed, tab, LF and CR dropped anywhere. Then it must be an absolute
+/// `http` or `https` URL with a host and no credentials, both as `isHTTPURL` reads the string and as
+/// `URL(string:)` parses it, so that no transport, the default or an app's, ever sees `file:` or a password.
+/// The second reading matters where Foundation's parse differs from WHATWG's: Foundation on Linux reads
+/// `https://h\@x/y` as user `h\` at host `x`, where WHATWG reads host `h` and path `/@x/y`.
+func tileRequestURL(_ tile: String) -> URL? {
+    let trimmed = trimmedLikeWHATWG(tile)
+    guard isHTTPURL(trimmed), let url = URL(string: trimmed),
+          let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+          let host = url.host, !host.isEmpty, url.user == nil, url.password == nil
+    else { return nil }
+    return url
+}
+
+/// What a refused tile fails with: `URLError(.unsupportedURL)`, which is what FoundationNetworking itself
+/// throws for a `file:` or `ftp:` URL.
+func refusedTileURL() -> URLError {
+    URLError(.unsupportedURL, userInfo: [
+        NSLocalizedDescriptionKey: "tile URL is not an absolute http or https URL without credentials",
+    ])
+}
+
+/// Leading and trailing C0 controls and spaces removed, and tab, LF and CR dropped anywhere, as WHATWG URL
+/// parsing does before it reads a URL.
+func trimmedLikeWHATWG(_ s: String) -> String {
+    let scalars = s.unicodeScalars
+    guard let first = scalars.firstIndex(where: { $0.value > 0x20 }),
+          let last = scalars.lastIndex(where: { $0.value > 0x20 }) else { return "" }
+    var kept = String.UnicodeScalarView()
+    kept.append(contentsOf: scalars[first...last].filter { $0 != "\t" && $0 != "\n" && $0 != "\r" })
+    return String(kept)
+}
+
+/// An absolute `http` or `https` URL (scheme in any case) with a non-empty host and no credentials, read as
+/// the Rust and Python ports read it. The authority ends at `/`, `\`, `?` or `#`, as a special URL's does in
+/// WHATWG. Any `@` in it is refused, an empty userinfo (`https://@h/x`) included, which `fetch` would drop
+/// and fetch (CONFORMANCE.md); FoundationNetworking would send it as `Authorization: Basic Og==`.
+func isHTTPURL(_ url: String) -> Bool {
+    let bytes = Array(url.utf8)
+    let separator = Array("://".utf8)
+    guard let end = bytes.indices.first(where: { bytes[$0...].starts(with: separator) }) else { return false }
+    let scheme = bytes[..<end].map { (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains($0) ? $0 | 0x20 : $0 }
+    guard scheme == Array("http".utf8) || scheme == Array("https".utf8) else { return false }
+    let authority = bytes[(end + separator.count)...].prefix { !"/\\?#".utf8.contains($0) }
+    if authority.contains(UInt8(ascii: "@")) { return false }
+    let host = authority.first == UInt8(ascii: "[")
+        ? authority.dropFirst().prefix { $0 != UInt8(ascii: "]") }
+        : authority.prefix { $0 != UInt8(ascii: ":") }
+    return !host.isEmpty
+}
+
 /// Fetches a URL exactly as given and returns the body. The body is read before the status is checked, so
 /// a non-2xx answer is always reported with the server's own code (contract §1).
 func fetchBody(_ transport: any HTTPTransport, _ url: URL) async throws -> Data {
