@@ -36,5 +36,5 @@ U+FFFD, as the reference's `response.text()` makes it; a leading byte-order mark
 ## Unicode skew
 
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode
-version differences between Foundation builds. None: all 36 cases, at the pinned commit, pass on every
+version differences between Foundation builds. None: all 41 cases, at the pinned commit, pass on every
 CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbreviations, `İ` and `ẞ`.

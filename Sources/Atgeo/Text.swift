@@ -41,9 +41,13 @@ func lowercase(_ s: String) -> String {
     return String(out)
 }
 
-/// Lowercase, NFKD, drop Mn, collapse whitespace runs to one space and trim.
+/// Lowercase, NFKD, lowercase again, drop Mn, collapse whitespace runs to one space and trim.
 func normalize(_ s: String) -> String {
-    let folded = lowercase(s).decomposedStringWithCompatibilityMapping
+    let decomposed = lowercase(s).decomposedStringWithCompatibilityMapping
+    // NFKD turns characters with no lowercase of their own (ℌ, 𝐇) into ordinary capitals. Most names
+    // have none, so the second pass, which copies the string, runs only when there is one.
+    let folded = decomposed.unicodeScalars.contains { $0.properties.changesWhenLowercased }
+        ? lowercase(decomposed) : decomposed
     var out = String.UnicodeScalarView()
     var pendingSpace = false
     for u in folded.unicodeScalars {

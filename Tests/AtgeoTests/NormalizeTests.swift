@@ -22,7 +22,7 @@ private func normalizeCases() throws -> [NormalizeCase] {
     }
 
     @Test func fixtureIsTheVendoredOne() throws {
-        #expect(try normalizeCases().count == 36)
+        #expect(try normalizeCases().count == 41)
     }
 
     @Test func lowercaseSigmaInTheInputIsLeftAlone() {

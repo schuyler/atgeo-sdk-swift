@@ -142,5 +142,25 @@
   {
     "input": "ẞ",
     "expected": "ß"
+  },
+  {
+    "input": "ℌello",
+    "expected": "hello"
+  },
+  {
+    "input": "𝐇𝐞𝐥𝐥𝐨 𝐖𝐨𝐫𝐥𝐝",
+    "expected": "hello world"
+  },
+  {
+    "input": "ℍ𝔸𝕄",
+    "expected": "ham"
+  },
+  {
+    "input": "㎒",
+    "expected": "mhz"
+  },
+  {
+    "input": "𝚺𝚨𝚺",
+    "expected": "σας"
   }
 ]
