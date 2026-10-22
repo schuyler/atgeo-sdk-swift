@@ -78,6 +78,7 @@ whether Apple's URLSession would have read a `file:` tile, and with the check in
 | A plain IDN host (`bücher.example`) | fetched in punycode (`xn--bcher-kva.example`) on Linux | punycode |
 | A forbidden host code point (`<`, `^`) | a failed tile, `refused`: `URL(string:)` returns nil on Linux | refused |
 | A shorthand or hex IPv4 host WHATWG rewrites (`http://0x7f.1/x`, `http://127.1/x`) | sent with the host as written; FoundationNetworking fails it with `URLError(.badURL)` (-1000) before resolving anything, a `transport` failure | rewritten to `127.0.0.1` and fetched |
+| A host WHATWG refuses that the check passes: a last label that looks numeric but is not a valid IPv4 address (`localhost.1`, `a.0x10`, `a.09`, `1.2.3.4.5`, `99999999999`), or a letter IDNA disallows (U+2132, U+2183) | sent as written, the letters in punycode: a `transport` failure, or fetched if the name resolves | refused |
 | A NUL or other C0 control, or a space, at either end of a tile URL | trimmed before the check, as WHATWG does; one inside the URL is percent-encoded by `URL(string:)` on Linux (`?q`, NUL, `z` sent as `?q%00z`) | trimmed; inside, percent-encoded |
 | A tile URL holding a character not allowed raw in a URL (a space, say) | percent-encoded and fetched, on Linux and on Apple platforms from iOS 17 / macOS 14 (Apple's `URL(string:)` encodes invalid characters from those releases on); before them `URL(string:)` returns nil and the tile counts as failed | percent-encoded and fetched |
 
@@ -96,6 +97,8 @@ a search a `transport` failure. `fetch` refuses the same redirects; before this,
 | `Location: file:///…`, `data:…` or `javascript:…` on Linux | FoundationNetworking reads it as a path on the current host (`http://host/etc/hostname`) and follows that, which the check allows; it never reads a file | a network failure |
 | `Location: //user:pw@host/x` on Linux | followed to `host`, with the credentials dropped | a network failure |
 | A `Location` holding backslashes (`\\h\x`) on Linux | followed as a path on the current host | `\` read as `/`: `//h/x`, another host |
+| A redirect target whose host Foundation maps before the check reads it (`Location: http://ẞ/…`, `http://` U+1160 `…`) | checked after Foundation's IDNA mapping, so followed: `ẞ` to `xn--zca`, U+1160 dropped. The redirecting server could name those hosts directly | `ẞ` to `ss`; U+1160 refused |
+| `Location: http:///x` | followed to `/x` on the current host | host `x` |
 
 ## Failed tiles
 

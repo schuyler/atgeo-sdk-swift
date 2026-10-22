@@ -227,6 +227,27 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         #expect(tileRequestURL("HTTPS://tiles.example/a.json")?.absoluteString == "https://tiles.example/a.json")
     }
 
+    @Test("lowercases only the scheme, even before a combining mark")
+    func lowercasesOnlyTheScheme() {
+        #expect(withLowercaseScheme("HTTP://\u{34F}LOCALHOST:18090/A") == "http://\u{34F}LOCALHOST:18090/A")
+        #expect(withLowercaseScheme("HTTP://\u{34F}LOCALHOST:18090/A/B?Q=http://Y") == "http://\u{34F}LOCALHOST:18090/A/B?Q=http://Y")
+        #expect(withLowercaseScheme("HtTpS://H/X") == "https://H/X")
+    }
+
+    @Test("fetches an uppercase scheme before a combining mark, with only the scheme lowercased")
+    func uppercaseSchemeBeforeACombiningMark() async throws {
+        let ports = PortBox()
+        let server = try Loopback { request in
+            guard request.path.contains("getTiles") else { return .init(status: 200, body: Data(#"{"records":[]}"#.utf8)) }
+            let tile = "HTTP://\u{34F}127.0.0.1:\(ports.port)/A/B?Q=http://Y"
+            return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": [tile]]))
+        }
+        ports.port = server.port
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion)
+        #expect(result.tiles == .init(fetched: 1, failed: 0), "\(result.tileFailures.map { "\($0.kind) \(String(describing: $0.error))" })")
+        #expect(server.received.filter { !$0.path.contains("/xrpc/") }.map(\.path) == ["/A/B?Q=http://Y"])
+    }
+
     @Test("fetches an IPv6 host", arguments: ["http://[::1]:8000/a.json"])
     func accepted(_ tile: String) async throws {
         let server = try FakeServer(tilesets: [overture([

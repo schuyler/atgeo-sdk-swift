@@ -276,9 +276,13 @@ func tileRequestURL(_ tile: String) -> URL? {
 }
 
 /// The scheme lowercased, as WHATWG writes it: FoundationNetworking fails `HTTPS://h/x` as an unsupported URL.
-private func withLowercaseScheme(_ url: String) -> String {
-    guard let separator = url.range(of: "://") else { return url }
-    return url[..<separator.lowerBound].lowercased() + url[separator.lowerBound...]
+/// By UTF-8 bytes up to the first `:`, which `isHTTPURL` has found to end an `http` or `https` scheme; a
+/// `String` search for `://` matches whole characters and misses one followed by a combining mark.
+func withLowercaseScheme(_ url: String) -> String {
+    var bytes = Array(url.utf8)
+    guard let colon = bytes.firstIndex(of: UInt8(ascii: ":")) else { return url }
+    for i in 0..<colon where (UInt8(ascii: "A")...UInt8(ascii: "Z")).contains(bytes[i]) { bytes[i] |= 0x20 }
+    return String(decoding: bytes, as: UTF8.self)
 }
 
 /// Foundation's own reading of a URL that has passed `isHTTPURL`. Defence in depth: the string check already
