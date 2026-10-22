@@ -169,7 +169,19 @@ The server also sees your IP address and whatever headers your transport sends. 
 
 `getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `place(origin:)` checks cached tiles before asking the server.
 
-The budget counts each tile's body as it arrived over the network, but the cache holds the parsed records, which take more memory than the bytes they came from: about four times more, measured on Linux with `atgeo-bench`'s synthetic tile, which is shaped like the OSM tiles places.atgeo.org serves. So the default 50 MiB budget can mean about 200 MB of memory. That's fine for most apps; in an extension or on watchOS, where the memory limits are much tighter, pass a smaller `cacheBudgetBytes`.
+The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: about 1.1 times, the rest being an index for `place(origin:)`. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `place(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
+
+Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves, on Linux (x86_64, release build), after asking the allocator to return free pages:
+
+| | Resident memory |
+|---|---:|
+| Parsed records, as the cache held them until October 2026 | 202 MiB (4.1 times the bodies) |
+| Bodies and the key index | 54 MiB (1.1 times) |
+| Plus the latest search's 8 tiles parsed | 102 MiB (2.1 times) |
+
+The parsed tiles of one search cost about four times their bodies on their own (26 MiB for 8 tiles here); the rest of the difference is the allocator holding on to pages that earlier searches' parsed tiles left fragmented. So budget for the default 50 MiB plus four to seven times the size of one search's tiles; 8 tiles like these are 7 MB of bodies. CI runs the same benchmark on macOS, where the figure is the process's physical footprint, the number iOS and watchOS limit an app or extension by. In an extension or on watchOS, a smaller `cacheBudgetBytes` is still a good idea.
+
+A search with text over a warm region of 36k records takes about 245 ms on that machine, down from about 650 ms, since names are normalized once per parse rather than on every search.
 
 There is no persistence; a new client starts cold. The default transport uses an ephemeral `URLSession` with no URL cache and no cookies, so nothing is cached behind the client's back either.
 
@@ -177,7 +189,7 @@ There is no persistence; a new client starts cold. The default transport uses an
 
 The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor, up to 8 tiles at a time, and a cached tile isn't parsed again.
 
-To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
+To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`, and measures the tile cache's memory and a search over a warm region; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
 
 ## Development
 
