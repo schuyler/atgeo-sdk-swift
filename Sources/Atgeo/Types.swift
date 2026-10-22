@@ -269,5 +269,6 @@ func atgeoError(status: Int, body: Data) -> AtgeoError {
     let json = try? decodeJSON(body)
     return AtgeoError(
         code: json?["error"]?.stringValue ?? "HttpError",
-        message: json?["message"]?.stringValue ?? "HTTP \(status)")
+        message: json?["message"]?.stringValue ?? "HTTP \(status)",
+        status: status)
 }

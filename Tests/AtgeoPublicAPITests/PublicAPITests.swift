@@ -50,9 +50,9 @@ import Atgeo  // not @testable: everything here must be reachable from an app
     }
 
     @Test func errorsDescribeThemselves() {
-        let error: any Error = AtgeoError(code: "PlaceNotFound", message: "no place with that uri")
+        let error: any Error = AtgeoError(code: "PlaceNotFound", message: "no place with that uri", status: 404)
         #expect(error.localizedDescription == "no place with that uri (PlaceNotFound)")
-        #expect("\(error)" == "AtgeoError(PlaceNotFound): no place with that uri")
+        #expect("\(error)" == "AtgeoError(PlaceNotFound, HTTP 404): no place with that uri")
 
         let argument: any Error = AtgeoArgumentError.invalidRegion("invalid circle")
         #expect(argument.localizedDescription == "invalid circle")

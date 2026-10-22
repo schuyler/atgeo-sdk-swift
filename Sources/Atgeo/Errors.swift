@@ -4,10 +4,14 @@ import Foundation
 public struct AtgeoError: Error, Sendable, Equatable {
     public let code: String
     public let message: String
+    /// The response's HTTP status, so a caller can tell a refused request (4xx) from a server failure
+    /// (5xx) without matching on `code`, which is an open list.
+    public let status: Int
 
-    public init(code: String, message: String) {
+    public init(code: String, message: String, status: Int) {
         self.code = code
         self.message = message
+        self.status = status
     }
 }
 
@@ -22,7 +26,7 @@ public enum AtgeoArgumentError: Error, Sendable, Equatable {
 
 extension AtgeoError: LocalizedError, CustomStringConvertible {
     public var errorDescription: String? { "\(message) (\(code))" }
-    public var description: String { "AtgeoError(\(code)): \(message)" }
+    public var description: String { "AtgeoError(\(code), HTTP \(status)): \(message)" }
 }
 
 extension AtgeoArgumentError: LocalizedError, CustomStringConvertible {
