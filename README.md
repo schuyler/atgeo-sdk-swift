@@ -163,7 +163,7 @@ What does go on the wire:
 - `describeService` and `describeTileset`, only if you call them.
 - `place(origin:)` on a cache miss sends the origin of the place you asked for.
 
-The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json` and nothing else, plus whatever `URLSession` adds on its own (User-Agent, Accept-Language, Accept-Encoding), which varies by platform. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
+The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json`, `User-Agent: atgeo-client-swift` and `Accept-Language: *`, the same on every device. Left to itself, `URLSession` on Apple platforms would send a User-Agent naming your app, its build, and the CFNetwork and Darwin versions (so the OS version), and an Accept-Language listing the user's languages. It still adds headers of its own, such as `Accept-Encoding`, which vary by platform. A transport you supply sends whatever its stack does. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
 
 ## Caching
 
