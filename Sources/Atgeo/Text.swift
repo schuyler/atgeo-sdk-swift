@@ -43,6 +43,25 @@ func lowercase(_ s: String) -> String {
 
 /// Lowercase, NFKD, lowercase again, drop Mn, collapse whitespace runs to one space and trim.
 func normalize(_ s: String) -> String {
+    s.utf8.allSatisfy { $0 < 0x80 } ? normalizeASCII(s) : normalizeUnicode(s)
+}
+
+/// `normalizeUnicode` for a string that is all ASCII, as most place names are, at a fraction of the cost:
+/// NFKD leaves ASCII as it is and ASCII has no Mn, so only the lowercasing and the whitespace remain.
+func normalizeASCII(_ s: String) -> String {
+    var out: [UInt8] = []
+    out.reserveCapacity(s.utf8.count)
+    var pendingSpace = false
+    for b in s.utf8 {
+        // Tab, line feed, vertical tab, form feed, carriage return and space are `whitespace`'s ASCII members.
+        if b == 0x20 || (0x09...0x0D).contains(b) { pendingSpace = !out.isEmpty; continue }
+        if pendingSpace { out.append(0x20); pendingSpace = false }
+        out.append((0x41...0x5A).contains(b) ? b + 0x20 : b)
+    }
+    return String(decoding: out, as: UTF8.self)
+}
+
+func normalizeUnicode(_ s: String) -> String {
     let decomposed = lowercase(s).decomposedStringWithCompatibilityMapping
     // NFKD turns characters with no lowercase of their own (ℌ, 𝐇) into ordinary capitals. Most names
     // have none, so the second pass, which copies the string, runs only when there is one.
