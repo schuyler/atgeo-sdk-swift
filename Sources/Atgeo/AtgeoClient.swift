@@ -14,6 +14,11 @@ public actor AtgeoClient {
     private static let maxTilesInFlight = 8
     private static let ttl: TimeInterval = 3600
 
+    private struct LoadedTile: Sendable {
+        var generation: Int
+        var records: [PreparedRecord]
+    }
+
     private struct TileList: Sendable {
         var tiles: [String]
         var overview: Bool
@@ -24,6 +29,11 @@ public actor AtgeoClient {
     private var tiles: TileCache
     private var tileLists: TtlCache<TileList>
     private var service: TtlCache<ServiceDescription>
+    /// Tile bodies parsed, fetched or cached, for tests.
+    private(set) var tileParses = 0
+    /// The tile cache's URLs, least recently used first, and those whose records are memoized; for tests.
+    var cachedTileURLs: [String] { tiles.urls }
+    var memoizedTileURLs: [String] { tiles.memoized }
 
     public init(
         server: URL = AtgeoClient.defaultServer,
@@ -33,11 +43,21 @@ public actor AtgeoClient {
         self.init(server: server, transport: transport, cacheBudgetBytes: cacheBudgetBytes, now: { Date() })
     }
 
+    /// For atgeo-bench, which measures the cache with and without the memo.
+    @_spi(Benchmark) public init(server: URL, transport: any HTTPTransport, memoize: Bool) {
+        self.init(server: server, transport: transport, cacheBudgetBytes: Self.defaultCacheBudgetBytes, now: { Date() },
+                  memoize: memoize)
+    }
+
     /// Takes the clock both one-hour caches read, so tests can expire them.
-    init(server: URL, transport: any HTTPTransport, cacheBudgetBytes: Int, now: @escaping @Sendable () -> Date) {
+    /// `memoize: false` parses every cached tile again on each read, so tests can show the memo changes nothing.
+    init(
+        server: URL, transport: any HTTPTransport, cacheBudgetBytes: Int, now: @escaping @Sendable () -> Date,
+        memoize: Bool = true
+    ) {
         base = xrpcBase(server)
         self.transport = transport
-        tiles = TileCache(budget: cacheBudgetBytes)
+        tiles = TileCache(budget: cacheBudgetBytes, memoize: memoize)
         tileLists = TtlCache(ttl: Self.ttl, now: now)
         service = TtlCache(ttl: Self.ttl, now: now)
     }
@@ -70,11 +90,12 @@ public actor AtgeoClient {
         var seen = Set<OrdinalKey>()
         let urls = lists.flatMap(\.tiles).filter { seen.insert(OrdinalKey($0)).inserted }.sorted(by: ordinalLess)
         let (loaded, failed) = try await fetchTiles(urls)
+        tiles.keepParsed(loaded.map { ($0.key.string, $0.value.generation, $0.value.records) })
 
         // In URL order, whatever order the tiles arrived in, so the dedupe winner is fixed (contract §4.3).
-        let records = urls.flatMap { loaded[OrdinalKey($0)] ?? [] }
+        let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
         return SearchResult(
-            places: assemble(records: records, region: region, query: query, sort: sort,
+            places: assemble(records, region: region, query: query, sort: sort,
                              dataset: resolvedDataset, collection: resolvedCollection),
             complete: failed == 0,
             overview: lists.contains(where: \.overview),
@@ -113,50 +134,74 @@ public actor AtgeoClient {
         return lists.map { $0! }
     }
 
-    /// Loads the tiles at most `maxTilesInFlight` at a time, in URL order. A cached tile is used without a
-    /// request and marked recently used; the lookup happens here, on the actor, before a child is added. A
-    /// failed tile is counted, not retried and not thrown, unless the search was cancelled (contract §4.4).
-    private func fetchTiles(_ urls: [String]) async throws -> (loaded: [OrdinalKey: [TileRecord]], failed: Int) {
+    /// Loads the tiles at most `maxTilesInFlight` requests at a time, in URL order. A cached tile is used without
+    /// a request and marked recently used; the lookup happens here, on the actor, before a child is added. A
+    /// cached tile whose records are not memoized is parsed again in a child that takes no request slot, so
+    /// requests go out exactly when they would if every cached tile were memoized. A failed tile is counted,
+    /// not retried and not thrown, unless the search was cancelled (contract §4.4).
+    private func fetchTiles(_ urls: [String]) async throws -> (loaded: [OrdinalKey: LoadedTile], failed: Int) {
+        enum Child: Sendable {
+            case fetched(url: String, tile: (body: Data, records: [PreparedRecord], keys: Set<Int>)?)
+            case parsed(url: String, generation: Int, records: [PreparedRecord]?)
+        }
         let transport = self.transport
         return try await withThrowingTaskGroup(
-            of: (url: String, records: [TileRecord]?, size: Int).self,
-            returning: (loaded: [OrdinalKey: [TileRecord]], failed: Int).self
+            of: Child.self, returning: (loaded: [OrdinalKey: LoadedTile], failed: Int).self
         ) { group in
-            var loaded: [OrdinalKey: [TileRecord]] = [:]
+            var loaded: [OrdinalKey: LoadedTile] = [:]
             var failed = 0
             var pending = urls[...]
-            var running = 0
+            var children = 0
             func addNext() {
                 while let url = pending.popFirst() {
-                    if let cached = tiles.get(url) {
-                        loaded[OrdinalKey(url)] = cached
+                    if let cached = tiles.read(url) {
+                        if let records = cached.records {
+                            loaded[OrdinalKey(url)] = LoadedTile(generation: cached.generation, records: records)
+                        } else {
+                            group.addTask { .parsed(url: url, generation: cached.generation, records: try? await cached.parsed()) }
+                            children += 1
+                        }
                         continue
                     }
                     group.addTask {
                         do {
                             guard let u = URL(string: url) else { throw URLError(.badURL) }
                             let body = try await fetchBody(transport, u)
-                            // Decoded here, in the child, so the actor is not held while it runs.
-                            return (url, try tileRecords(decodeJSON(body)), body.count)
+                            // Parsed here, in the child, so the actor is not held while it runs.
+                            let (records, keys) = try parseTile(body)
+                            return .fetched(url: url, tile: (body, records, keys))
                         } catch {
                             if Task.isCancelled { throw error }
-                            return (url, nil, 0)
+                            return .fetched(url: url, tile: nil)
                         }
                     }
-                    running += 1
+                    children += 1
                     return
                 }
             }
             for _ in 0..<Self.maxTilesInFlight { addNext() }
-            while running > 0, let result = try await group.next() {
-                running -= 1
-                if let records = result.records {
-                    tiles.set(result.url, records: records, size: result.size)
-                    loaded[OrdinalKey(result.url)] = records
-                } else {
-                    failed += 1
+            while children > 0, let child = try await group.next() {
+                children -= 1
+                switch child {
+                case let .fetched(url, tile):
+                    if let tile {
+                        tileParses += 1
+                        let generation = tiles.insert(url, body: tile.body, keys: tile.keys, size: tile.body.count)
+                        loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: tile.records)
+                    } else {
+                        failed += 1
+                    }
+                    addNext()
+                case let .parsed(url, generation, records):
+                    tileParses += 1
+                    // The body parsed when it was fetched, and parsing is deterministic, so this does not fail.
+                    // Were it to, the tile would count as failed rather than trap.
+                    if let records {
+                        loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records)
+                    } else {
+                        failed += 1
+                    }
                 }
-                addNext()
             }
             return (loaded, failed)
         }
@@ -168,8 +213,13 @@ public actor AtgeoClient {
     /// - Throws: `AtgeoError` (`PlaceNotFound` and others) for a non-2xx answer; `DecodingError` for a body
     ///   with no `record` object; the transport's error on a network failure or cancellation.
     public func place(origin: String) async throws -> PlaceRecord {
-        if let cached = tiles.find(key: origin) {
-            return PlaceRecord(origin: origin, place: cached.value, importance: cached.importance)
+        // The scan reads only each tile's key hashes; the lowest tile URL that has the key is parsed off the
+        // actor unless it is memoized. Within that tile, the first record with the key wins.
+        for tile in tiles.lookup(key: origin) {
+            if tile.records == nil { tileParses += 1 }
+            if let cached = firstRecord((try? await tile.parsed()) ?? [], key: origin) {
+                return PlaceRecord(origin: origin, place: cached.value, importance: cached.importance)
+            }
         }
         guard let url = xrpcURL(base: base, nsid: "org.atgeo.getPlace", [("uri", origin)]) else { throw URLError(.badURL) }
         return try placeRecord(decodeJSON(try await fetchBody(transport, url)), origin: origin)

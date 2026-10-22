@@ -43,6 +43,25 @@ func lowercase(_ s: String) -> String {
 
 /// Lowercase, NFKD, lowercase again, drop Mn, collapse whitespace runs to one space and trim.
 func normalize(_ s: String) -> String {
+    s.utf8.allSatisfy { $0 < 0x80 } ? normalizeASCII(s) : normalizeUnicode(s)
+}
+
+/// `normalizeUnicode` for a string that is all ASCII, as most place names are, at a fraction of the cost:
+/// NFKD leaves ASCII as it is and ASCII has no Mn, so only the lowercasing and the whitespace remain.
+func normalizeASCII(_ s: String) -> String {
+    var out: [UInt8] = []
+    out.reserveCapacity(s.utf8.count)
+    var pendingSpace = false
+    for b in s.utf8 {
+        // Tab, line feed, vertical tab, form feed, carriage return and space are `whitespace`'s ASCII members.
+        if b == 0x20 || (0x09...0x0D).contains(b) { pendingSpace = !out.isEmpty; continue }
+        if pendingSpace { out.append(0x20); pendingSpace = false }
+        out.append((0x41...0x5A).contains(b) ? b + 0x20 : b)
+    }
+    return String(decoding: out, as: UTF8.self)
+}
+
+func normalizeUnicode(_ s: String) -> String {
     let decomposed = lowercase(s).decomposedStringWithCompatibilityMapping
     // NFKD turns characters with no lowercase of their own (ℌ, 𝐇) into ordinary capitals. Most names
     // have none, so the second pass, which copies the string, runs only when there is one.
@@ -123,23 +142,31 @@ private func scoreName(_ query: [UInt16], _ tokens: [[UInt16]], _ name: [UInt16]
     return 0.5 * jaroWinkler(query, name) + 0.5 * (sum / Double(tokens.count))
 }
 
-/// The best score of the place's name and variant names against a normalized, non-empty query.
-func textScore(query: String, value: JSONObject) -> Double {
-    let q = Array(query.utf16)
-    let tokens = Array(words(q).prefix(maxQueryTokens))
+/// The place's name and variant names, normalized, as UTF-16, in that order; empty ones are dropped. A tile's
+/// records get these once, when it is parsed, rather than on every search.
+func normalizedNames(_ value: JSONObject) -> [[UInt16]] {
     var raw: [String] = []
     if let name = value["name"]?.stringValue { raw.append(name) }
     for variant in value["variants"]?.arrayValue ?? [] {
         // A variant that is not an object, `null` included (contract §16), or has no string name is skipped.
         if let name = variant["name"]?.stringValue { raw.append(name) }
     }
+    return raw.map { Array(normalize($0).utf16) }.filter { !$0.isEmpty }
+}
+
+/// The best score of the place's normalized names against a normalized, non-empty query.
+func textScore(query: String, names: [[UInt16]]) -> Double {
+    let q = Array(query.utf16)
+    let tokens = Array(words(q).prefix(maxQueryTokens))
     var best = 0.0
-    for name in raw {
-        let n = normalize(name)
-        if n.isEmpty { continue }
-        best = max(best, scoreName(q, tokens, Array(n.utf16)))
+    for name in names {
+        best = max(best, scoreName(q, tokens, name))
     }
     return best
+}
+
+func textScore(query: String, value: JSONObject) -> Double {
+    textScore(query: query, names: normalizedNames(value))
 }
 
 /// Ordinal equality, as JavaScript's `===` on strings. `String ==` is canonical equivalence, under which

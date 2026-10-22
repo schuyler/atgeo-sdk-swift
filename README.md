@@ -169,15 +169,27 @@ The server also sees your IP address and whatever headers your transport sends. 
 
 `getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `place(origin:)` checks cached tiles before asking the server.
 
-The budget counts each tile's body as it arrived over the network, but the cache holds the parsed records, which take more memory than the bytes they came from: about four times more, measured on Linux with `atgeo-bench`'s synthetic tile, which is shaped like the OSM tiles places.atgeo.org serves. So the default 50 MiB budget can mean about 200 MB of memory. That's fine for most apps; in an extension or on watchOS, where the memory limits are much tighter, pass a smaller `cacheBudgetBytes`.
+The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: 1.0 to 1.4 times, measured below, the rest being an index for `place(origin:)` and allocator overhead. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `place(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
+
+Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves (49.4 MiB of bodies), in a release build. On Linux the figure is RSS; on macOS it's the process's physical footprint, the number iOS and watchOS limit an app or extension by. Each is read after asking the allocator to return free pages:
+
+| | Linux (x86_64) | macOS 14 | macOS 26 |
+|---|---:|---:|---:|
+| Parsed records, as the cache held them until October 2026 | 202 MiB (4.1×) | 181 MiB (3.7×) | 210 MiB (4.3×) |
+| Bodies and the key index | 54 MiB (1.1×) | 48 MiB (1.0×) | 67 MiB (1.4×) |
+| Plus the latest search's 8 tiles parsed | 102 MiB (2.1×) | 70 MiB (1.4×) | 82–94 MiB (1.7–1.9×) |
+
+The parsed tiles of one search cost about four times their bodies (26 MiB for these 8 tiles, which are 7 MB of bodies); on Linux the total comes out higher than that because glibc holds on to pages that earlier searches' parsed tiles left fragmented. So budget for the default 50 MiB plus four to seven times the size of one search's tiles. In an extension or on watchOS, a smaller `cacheBudgetBytes` is still a good idea.
+
+A search with text over a warm region of 36k records takes about 245 ms on Linux and 185 to 250 ms on the macOS CI runners, down from 575 to 675 ms, since names are normalized once per parse rather than on every search.
 
 There is no persistence; a new client starts cold. The default transport uses an ephemeral `URLSession` with no URL cache and no cookies, so nothing is cached behind the client's back either.
 
 ## Performance
 
-The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor, up to 8 tiles at a time, and a cached tile isn't parsed again.
+The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor: a fetched tile as it arrives, with at most 8 fetches in flight, and a cached tile that isn't among the latest search's parsed tiles alongside them (see Caching, above).
 
-To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
+To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`, and measures the tile cache's memory and a search over a warm region; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
 
 ## Development
 

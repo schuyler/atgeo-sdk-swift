@@ -10,9 +10,13 @@ func recordKey(_ r: TileRecord) -> String? {
 /// Keeps the first copy of each key, in the order given; records without a key all pass. Keys are
 /// compared by UTF-16 code units, so origins differing only in normalization form stay distinct.
 func dedupe(_ records: [TileRecord]) -> [TileRecord] {
+    dedupe(records.map(PreparedRecord.init)).map(\.record)
+}
+
+func dedupe(_ records: [PreparedRecord]) -> [PreparedRecord] {
     var seen = Set<[UInt16]>()
-    return records.filter { r in
-        guard let key = recordKey(r) else { return true }
+    return records.filter { p in
+        guard let key = recordKey(p.record) else { return true }
         return seen.insert(Array(key.utf16)).inserted
     }
 }
@@ -30,8 +34,14 @@ func inCollection(_ r: TileRecord, dataset: String, collection: String) -> Bool 
 func assemble(
     records: [TileRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?
 ) -> [SearchHit] {
+    assemble(records.map(PreparedRecord.init), region: region, query: query, sort: sort, dataset: dataset, collection: collection)
+}
+
+func assemble(
+    _ records: [PreparedRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?
+) -> [SearchHit] {
     let kept = dedupe(records)
-        .filter { r in collection.map { inCollection(r, dataset: dataset, collection: $0) } ?? true }
-        .filter { inRegion(locate($0.value), region) }
+        .filter { p in collection.map { inCollection(p.record, dataset: dataset, collection: $0) } ?? true }
+        .filter { inRegion(locate($0.record.value), region) }
     return rank(kept, region: region, query: query, sort: sort)
 }
