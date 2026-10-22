@@ -269,7 +269,11 @@ func isHTTPURL(_ url: String) -> Bool {
 /// Fetches a URL exactly as given and returns the body. The body is read before the status is checked, so
 /// a non-2xx answer is always reported with the server's own code (contract §1).
 func fetchBody(_ transport: any HTTPTransport, _ url: URL) async throws -> Data {
-    let response = try await transport.get(url)
+    try checkedBody(try await transport.get(url))
+}
+
+/// The body of a 2xx response; for any other status, the `AtgeoError` the body describes.
+func checkedBody(_ response: HTTPResponse) throws -> Data {
     guard (200..<300).contains(response.status) else { throw atgeoError(status: response.status, body: response.body) }
     return response.body
 }

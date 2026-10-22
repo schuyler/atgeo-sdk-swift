@@ -17,7 +17,7 @@ failed a tile on `1e400`, `1e-400` or a lone surrogate and kept the first of dup
 |---|---|---|
 | A lone surrogate escape (`"\uD800"`) | U+FFFD, since a Swift `String` cannot hold a lone surrogate | the lone code unit, kept |
 | Two keys that are canonically equivalent (`é` precomposed and decomposed) | merged into one key of `[String: JSONValue]`, holding the later value | kept as two keys |
-| Nesting deeper than 512 arrays or objects | parse error; inside a tile, the tile counts as failed | accepted |
+| Nesting deeper than 512 arrays or objects | parse error; inside a tile, a `decode` failure. The parser is iterative, so no depth overflows the stack | accepted |
 
 Where the two agree, at margins a port might get wrong: a number literal that overflows a double (`1e400`) is
 infinity and one that underflows (`1e-400`) is zero; the last of duplicate keys wins; invalid UTF-8 becomes
@@ -53,6 +53,21 @@ longer matters.
 | A backslash ending the authority (`https://h\x/y`, `https://h\@x/y`) | a failed tile. On Linux `URL(string:)` returns nil for the first and reads the second as user `h\` at host `x`, so it disagrees with the string check and the URL is refused; Apple platforms before iOS 17 / macOS 14 return nil for both | host `h`, the backslash read as `/` |
 | A backslash in the path (`https://h/a\b`) | fetched with it percent-encoded (`/a%5Cb`), on Linux; Apple platforms before iOS 17 / macOS 14 return nil and the tile fails | `/a/b` |
 | A tile URL holding a character not allowed raw in a URL (a space, say) | percent-encoded and fetched, on Linux and on Apple platforms from iOS 17 / macOS 14 (Apple's `URL(string:)` encodes invalid characters from those releases on); before them `URL(string:)` returns nil and the tile counts as failed | percent-encoded and fetched |
+
+## Failed tiles
+
+`SearchResult.tileFailures` reports each failed tile in tile URL order with the `url`, `kind` and `status`
+contract §4.4 pins, plus `error`, which `==` and `Codable` leave out. The port's choices where the contract
+leaves them open:
+
+- `error` for `.refused` is `URLError(.unsupportedURL)`, what FoundationNetworking itself throws for `file:`.
+- `.status` comes only from the client's own status check, `.transport` from anything `HTTPTransport.get`
+  throws, an `AtgeoError` from an app's transport included.
+- A cached tile whose body fails to parse again would be `.decode`; parsing is deterministic, so no test
+  reaches it.
+- A cancelled search throws the in-flight tile's own error, as the reference does, rather than report failures.
+- Each failure is logged with `os.Logger` (subsystem `org.atgeo`, category `tiles`) at debug level on Apple
+  platforms, kind and status public, URL and error description private; nothing is logged on Linux.
 
 ## Unicode skew
 
