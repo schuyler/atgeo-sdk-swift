@@ -21,6 +21,14 @@ final class Loopback: @unchecked Sendable {
         var headers: [(name: String, value: String)] = []
         var body: Data = Data()
         var hold = false
+        /// Sends the body this many bytes at a time, pausing between pieces, as a slow network would.
+        var trickle: (bytes: Int, pause: TimeInterval)?
+    }
+
+    /// How much of a response body was sent, and whether the client hung up before the end.
+    struct Sent: Sendable {
+        var bytes: Int
+        var complete: Bool
     }
 
     private let listener: Int32
@@ -31,6 +39,8 @@ final class Loopback: @unchecked Sendable {
     private let released = DispatchSemaphore(value: 0)
     private var heldCount = 0
     private let heldArrived = DispatchSemaphore(value: 0)
+    private var bodies: [Sent] = []
+    private let bodySent = DispatchSemaphore(value: 0)
 
     var received: [Request] { lock.withLock { requests } }
 
@@ -80,6 +90,17 @@ final class Loopback: @unchecked Sendable {
         }
     }
 
+    /// Waits until a response has been written, or abandoned by the client, or the timeout passes, and
+    /// returns how much of its body went out. Off the cooperative pool, as `waitForHeldRequest` is.
+    func waitForBodySent(timeout: TimeInterval = 60) async -> Sent? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global().async { [self] in
+                let done = bodySent.wait(timeout: .now() + timeout) == .success
+                continuation.resume(returning: done ? lock.withLock { bodies.first } : nil)
+            }
+        }
+    }
+
     private func acceptLoop() {
         while true {
             let conn = accept(listener, nil, nil)
@@ -121,22 +142,38 @@ final class Loopback: @unchecked Sendable {
         var text = "HTTP/1.1 \(response.status) Status\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\n"
         for (name, value) in response.headers { text += "\(name): \(value)\r\n" }
         text += "\r\n"
-        write(conn, Data(text.utf8) + response.body)
+        guard write(conn, Data(text.utf8)) else { return }
+        var sent = 0
+        if let trickle = response.trickle {
+            while sent < response.body.count {
+                let piece = response.body[sent..<min(sent + trickle.bytes, response.body.count)]
+                guard write(conn, Data(piece)) else { break }
+                sent += piece.count
+                Thread.sleep(forTimeInterval: trickle.pause)
+            }
+        } else if write(conn, response.body) {
+            sent = response.body.count
+        }
+        lock.withLock { bodies.append(Sent(bytes: sent, complete: sent == response.body.count)) }
+        bodySent.signal()
     }
 
-    private func write(_ conn: Int32, _ data: Data) {
+    /// Whether every byte went out; false once the client has hung up.
+    @discardableResult
+    private func write(_ conn: Int32, _ data: Data) -> Bool {
         #if canImport(Glibc)
         let flags = Int32(MSG_NOSIGNAL)
         #else
         let flags: Int32 = 0
         #endif
-        data.withUnsafeBytes { raw in
+        return data.withUnsafeBytes { raw in
             var offset = 0
             while offset < raw.count {
                 let n = send(conn, raw.baseAddress! + offset, raw.count - offset, flags)
-                if n <= 0 { return }
+                if n <= 0 { return false }
                 offset += n
             }
+            return true
         }
     }
 }

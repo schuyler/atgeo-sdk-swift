@@ -22,6 +22,10 @@ public protocol HTTPTransport: Sendable {
 
 /// The default transport. Sets `Accept: application/json` on every request and nothing else; whatever
 /// URLSession adds by itself (User-Agent, Accept-Language, Accept-Encoding) varies by platform.
+///
+/// A body larger than `maxBodyBytes`, counted after URLSession has decoded any `Content-Encoding`, fails the
+/// request with `URLError(.dataLengthExceedsMaximum)`: a network failure, and inside a search a failed tile
+/// (contract §14). The server names the tile URLs, and a few kilobytes of gzip can decode to gigabytes.
 public struct URLSessionTransport: HTTPTransport {
     /// Ephemeral, with no URL cache and no cookies: the client starts cold on every launch (contract §10, §14).
     public static let defaultSession: URLSession = {
@@ -33,17 +37,55 @@ public struct URLSessionTransport: HTTPTransport {
         return URLSession(configuration: configuration)
     }()
 
-    private let session: URLSession
+    /// 32 MiB, as the Kotlin port's; the largest tiles places.atgeo.org serves are about 2 MB.
+    public static let defaultMaxBodyBytes = 32 * 1024 * 1024
 
-    public init(session: URLSession = URLSessionTransport.defaultSession) {
+    private let session: URLSession
+    private let maxBodyBytes: Int
+
+    public init(session: URLSession = URLSessionTransport.defaultSession, maxBodyBytes: Int = URLSessionTransport.defaultMaxBodyBytes) {
         self.session = session
+        self.maxBodyBytes = maxBodyBytes
     }
 
     public func get(_ url: URL) async throws -> HTTPResponse {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        let (body, response) = try await session.data(for: request)
+        let limit = BodyLimit(maxBodyBytes)
+        let body: Data, response: URLResponse
+        do {
+            (body, response) = try await session.data(for: request, delegate: limit)
+        } catch where limit.exceeded {
+            throw URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
+        }
+        // The delegate's cancel can land after the last byte has arrived, so the body is checked too.
+        if limit.exceeded || body.count > maxBodyBytes {
+            throw URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
+        }
         return HTTPResponse(status: (response as? HTTPURLResponse)?.statusCode ?? 0, body: body)
+    }
+}
+
+/// Counts a task's body as it arrives, decoded, and cancels the task once it passes the limit, so that an
+/// oversized body is not read to the end. A task delegate, not a session one, so that it works on a session
+/// the app supplies; on Linux, FoundationNetworking calls a task delegate only for `data(for:delegate:)`.
+private final class BodyLimit: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+    private let limit: Int
+    private let lock = NSLock()
+    private var received = 0
+    private var over = false
+
+    init(_ limit: Int) { self.limit = limit }
+
+    var exceeded: Bool { lock.withLock { over } }
+
+    func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        let cancel = lock.withLock { () -> Bool in
+            received += data.count
+            if received > limit && !over { over = true; return true }
+            return false
+        }
+        if cancel { dataTask.cancel() }
     }
 }
 
