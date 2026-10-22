@@ -49,7 +49,7 @@ let atgeo = AtgeoClient(
 )
 ```
 
-Point `server` at your own garganorn to run against your own data; see [Server requirements](#server-requirements). `transport` is anything conforming to `HTTPTransport`, a protocol with one method, `get(_ url: URL) async throws -> HTTPResponse`; it's there for tests, proxies, or a `URLSession` of your own (`URLSessionTransport(session:)`). `URLSessionTransport` refuses a response body over 32 MiB, counted after gzip and friends are decoded, since the server picks the tile URLs and a few kilobytes of gzip can unpack to gigabytes; the largest real tiles are about 2 MB. A refused tile is a failed tile, and anything else fails like a network error. `maxBodyBytes:` changes the limit. If you bring your own transport, it's yours to cap. The budget caps the in-memory tile cache (see [Caching](#caching)).
+Point `server` at your own garganorn to run against your own data; see [Server requirements](#server-requirements). `transport` is anything conforming to `HTTPTransport`, a protocol with one method, `get(_ url: URL) async throws -> HTTPResponse`; it's there for tests, proxies, or a `URLSession` of your own (`URLSessionTransport(session:)`). `URLSessionTransport` refuses a response body over 32 MiB, counted after gzip and friends are decoded, since the server picks the tile URLs and a megabyte of gzip can unpack to a gigabyte; the largest real tiles are about 2 MB. A refused tile is a failed tile, and anything else fails like a network error. `maxBodyBytes:` changes the limit. If you bring your own transport, it's yours to cap. The budget caps the in-memory tile cache (see [Caching](#caching)).
 
 `AtgeoClient` is an actor. One client can be shared across tasks, and every call made on it shares its caches.
 
@@ -163,7 +163,7 @@ What does go on the wire:
 - `describeService` and `describeTileset`, only if you call them.
 - `place(origin:)` on a cache miss sends the origin of the place you asked for.
 
-The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json` and nothing else, plus whatever `URLSession` adds on its own (User-Agent, Accept-Language, Accept-Encoding), which varies by platform. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
+The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json`, `User-Agent: atgeo-client-swift` and `Accept-Language: *`, the same on every device. Left to itself, `URLSession` on Apple platforms would send a User-Agent naming your app, its build, and the CFNetwork and Darwin versions (so the OS version), and an Accept-Language listing the user's languages. It still adds headers of its own, such as `Accept-Encoding`, which vary by platform. A transport you supply sends whatever its stack does. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
 
 ## Caching
 

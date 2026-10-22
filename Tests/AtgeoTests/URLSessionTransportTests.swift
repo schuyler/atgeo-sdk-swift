@@ -41,6 +41,13 @@ import Testing
         let body = try await fetchBody(transport, server.url("/start"))
         #expect(body == Data(#"{"tiles":[]}"#.utf8))
         #expect(server.received.map(\.path) == ["/start", "/final"])
+        // The redirected request carries the transport's headers too, not URLSession's own (contract §12, item 5).
+        for request in server.received {
+            let agent = request.headers.filter { $0.name.lowercased() == "user-agent" }.map(\.value)
+            let language = request.headers.filter { $0.name.lowercased() == "accept-language" }.map(\.value)
+            #expect(agent == ["atgeo-client-swift"], "\(request.path)")
+            #expect(language == ["*"], "\(request.path)")
+        }
     }
 
     @Test func cancellingTheTaskAbortsAHeldRequest() async throws {
@@ -86,7 +93,7 @@ import Testing
         }
     }
 
-    @Test func sendsAcceptJSONAndNothingFromTheRequest() async throws {
+    @Test func sendsItsFixedHeadersAndNothingFromTheRequest() async throws {
         let marker = "zanzibar-quokka-7749295"
         let server = try Loopback { _ in .init(status: 200) }
         _ = try await transport.get(server.url("/echo/\(marker)?q=\(marker)"))
@@ -94,6 +101,11 @@ import Testing
         #expect(request.method == "GET")
         let accept = request.headers.filter { $0.name.lowercased() == "accept" }.map(\.value)
         #expect(accept == ["application/json"])
+        let agent = request.headers.filter { $0.name.lowercased() == "user-agent" }.map(\.value)
+        #expect(agent == ["atgeo-client-swift"])
+        // Replaces the locale-derived one URLSession would add (en-US,en;q=0.9 on Apple CI runners, en on Linux).
+        let language = request.headers.filter { $0.name.lowercased() == "accept-language" }.map(\.value)
+        #expect(language == ["*"])
         for (name, value) in request.headers {
             #expect(!name.lowercased().contains(marker) && !value.lowercased().contains(marker), "\(name): \(value)")
         }

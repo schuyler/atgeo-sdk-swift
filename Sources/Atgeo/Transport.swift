@@ -20,12 +20,17 @@ public protocol HTTPTransport: Sendable {
     func get(_ url: URL) async throws -> HTTPResponse
 }
 
-/// The default transport. Sets `Accept: application/json` on every request and nothing else; whatever
-/// URLSession adds by itself (User-Agent, Accept-Language, Accept-Encoding) varies by platform.
+/// Sent in place of URLSession's own, which on Apple platforms is `<app>/<build> CFNetwork/<version>
+/// Darwin/<version>`: it names the app and gives away the OS version (contract §12, item 5).
+let userAgent = "atgeo-client-swift"
+
+/// The default transport. Sets `Accept: application/json`, `User-Agent: atgeo-client-swift` and
+/// `Accept-Language: *` on every request; the last replaces the one URLSession derives from the user's
+/// locale. Whatever else URLSession adds by itself (Accept-Encoding, for one) varies by platform.
 ///
 /// A body larger than `maxBodyBytes`, counted after URLSession has decoded any `Content-Encoding`, fails the
 /// request with `URLError(.dataLengthExceedsMaximum)`: a network failure, and inside a search a failed tile
-/// (contract §14). The server names the tile URLs, and a few kilobytes of gzip can decode to gigabytes.
+/// (contract §14). The server names the tile URLs, and a megabyte of gzip can decode to a gigabyte.
 public struct URLSessionTransport: HTTPTransport {
     /// Ephemeral, with no URL cache and no cookies: the client starts cold on every launch (contract §10, §14).
     public static let defaultSession: URLSession = {
@@ -43,6 +48,8 @@ public struct URLSessionTransport: HTTPTransport {
     private let session: URLSession
     private let maxBodyBytes: Int
 
+    /// A session of your own may set headers in `httpAdditionalHeaders`; the `User-Agent` and
+    /// `Accept-Language` this transport sets on each request take precedence over them.
     public init(session: URLSession = URLSessionTransport.defaultSession, maxBodyBytes: Int = URLSessionTransport.defaultMaxBodyBytes) {
         self.session = session
         self.maxBodyBytes = maxBodyBytes
@@ -51,6 +58,8 @@ public struct URLSessionTransport: HTTPTransport {
     public func get(_ url: URL) async throws -> HTTPResponse {
         var request = URLRequest(url: url)
         request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
+        request.setValue("*", forHTTPHeaderField: "Accept-Language")
         let tooLarge = URLError(.dataLengthExceedsMaximum, userInfo: [NSURLErrorFailingURLErrorKey: url])
         #if canImport(FoundationNetworking)
         // FoundationNetworking has no bytes(for:); it does call a task delegate given to data(for:delegate:).
