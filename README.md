@@ -12,8 +12,8 @@ import Atgeo
 let atgeo = AtgeoClient()
 
 let result = try await atgeo.searchPlaces(
-    region: .circle(lat: 42.9956, lon: -71.4548, radius: 1000),  // meters
-    text: "Dunkin Donts"
+    region: .circle(lat: 39.9526, lon: -75.1652, radius: 1000),  // meters
+    text: "Starbux"
 )
 
 for hit in result.places {
@@ -21,7 +21,7 @@ for hit in result.places {
 }
 ```
 
-Misspellings are fine; matching is fuzzy, and that finds the Dunkin' Donuts in downtown Manchester, NH. The public server at places.atgeo.org only covers eastern North America for now, so a search further west comes back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
+Misspellings are fine; matching is fuzzy, and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
 
 ## Installation
 
@@ -70,8 +70,8 @@ Every method is `async throws`. Cancel the calling `Task` to abort one.
 Regions:
 
 ```swift
-.circle(lat: 42.9956, lon: -71.4548, radius: 1000)              // radius in meters
-.bbox(minLon: -71.48, minLat: 42.98, maxLon: -71.43, maxLat: 43.01)  // degrees
+.circle(lat: 39.9526, lon: -75.1652, radius: 1000)              // radius in meters
+.bbox(minLon: -75.18, minLat: 39.94, maxLon: -75.14, maxLat: 39.96)  // degrees
 ```
 
 Datasets and collections work like this:
