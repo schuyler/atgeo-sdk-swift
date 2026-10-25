@@ -4,6 +4,8 @@ import Testing
 
 struct RankingScenario: Sendable, CustomTestStringConvertible {
     var name: String
+    var dataset: String
+    var collection: String
     var region: Region
     var text: String?
     var sort: SortMode
@@ -33,6 +35,8 @@ private func scenarios() throws -> [RankingScenario] {
         }
         return RankingScenario(
             name: try #require(s["name"]?.stringValue),
+            dataset: try #require(s["dataset"]?.stringValue),
+            collection: try #require(s["collection"]?.stringValue),
             region: region,
             text: s["text"]?.stringValue,
             sort: s["sort"]?.stringValue.flatMap(SortMode.init(rawValue:)) ?? .fused,
@@ -50,14 +54,14 @@ private func hit(_ origin: String?) -> TileRecord {
 
 private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
 
-/// The fixture through contract §4.6 to §4.9 (no network); the ranking.test.ts port through the client comes
-/// in step 8.
+/// The fixture through contract §4.6 to §4.9 (no network), as a search of the scenario's dataset and collection
+/// (contract §8).
 @Suite struct RankingTests {
     @Test("ranking scenarios", arguments: try scenarios())
     func scenario(_ s: RankingScenario) {
         let places = assemble(
             records: s.records, region: s.region, query: normalize(s.text ?? ""), sort: s.sort,
-            dataset: "overturemaps.org", collection: "place")
+            dataset: s.dataset, collection: s.collection)
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {
             for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }
@@ -123,7 +127,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
     @Test("ranking scenarios", arguments: try scenarios())
     func scenario(_ s: RankingScenario) async throws {
         let server = try FakeServer(tilesets: [overture([FakeTile(url: "https://places.atgeo.org/tiles/t0.json", records: s.records)])])
-        let places = try await server.client().searchPlaces(region: s.region, dataset: "overturemaps.org", text: s.text, collection: "place", sort: s.sort).places
+        let places = try await server.client().searchPlaces(region: s.region, dataset: s.dataset, text: s.text, collection: s.collection, sort: s.sort).places
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {
             for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }
