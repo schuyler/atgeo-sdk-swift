@@ -31,7 +31,8 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 
     @Test("returns the value unmodified with importance beside it")
     func unmodified() async throws {
-        #expect(try await setup().client().place(origin: origin) == PlaceRecord(origin: origin, place: value, importance: 80))
+        #expect(try await setup().client().place(origin: origin)
+                == PlaceRecord(origin: origin, place: value, importance: 80, attribution: [overturePlaceAttribution]))
     }
 
     @Test("returns a nil importance when the server gives none")
@@ -69,7 +70,76 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         #expect(places.first?.origin == "https://example.org/r/u")
         fake.goOffline()
         #expect(try await client.place(origin: "https://example.org/r/u")
-                == PlaceRecord(origin: "https://example.org/r/u", place: uriOnly, importance: 4))
+                == PlaceRecord(origin: "https://example.org/r/u", place: uriOnly, importance: 4,
+                               attribution: [overturePlaceAttribution]))
+    }
+
+    // place(origin:) carries attribution as served (contract §9): from the cache, the attribution of the tile that
+    // held the record; from the network, the response's. The fake's tileset credits its collection, then these
+    // references, one of them twice.
+    static let references: [JSONObject] = [
+        ["dataset": .string("z.example"), "collection": .string("c")],
+        ["dataset": .string("a.example"), "collection": .string("c"), "release": .string("1")],
+        ["dataset": .string("a.example"), "collection": .string("c"), "release": .string("2")],
+    ]
+    static let served = [
+        overturePlaceAttribution,
+        Attribution(dataset: "z.example", collection: "c"),
+        Attribution(dataset: "a.example", collection: "c", release: "1"),
+        Attribution(dataset: "a.example", collection: "c", release: "2"),
+    ]
+
+    func withReferences() throws -> FakeServer {
+        var tileset = overture([FakeTile(url: tileURL("a"), records: [record(value, importance: 80)])])
+        tileset.references = Self.references
+        return try FakeServer(tilesets: [tileset])
+    }
+
+    @Test("returns the tile's attribution from the cache in served order, duplicates included, unsorted")
+    func attributionFromCache() async throws {
+        let fake = try withReferences()
+        let client = fake.client()
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        fake.goOffline()
+        #expect(try await client.place(origin: origin).attribution == Self.served)
+    }
+
+    @Test("returns the response's attribution from the network in served order, duplicates included, unsorted")
+    func attributionFromNetwork() async throws {
+        let fake = try withReferences()
+        let answer = try await fake.client().place(origin: origin)
+        #expect(fake.requests.contains { $0.path == "/xrpc/org.atgeo.getPlace" })
+        #expect(answer.attribution == Self.served)
+    }
+
+    // Swift's structs are values: the answer is the app's own copy, so changing it, or an entry's `licenses`,
+    // changes nothing the client caches. This is the contract's copy requirement (§9), met by the language.
+    @Test("changing a place(origin:) answer's attribution changes nothing cached", arguments: [true, false])
+    func attributionIsTheAppsOwn(fromCache: Bool) async throws {
+        var tileset = overture([FakeTile(url: tileURL("a"), records: [record(value, importance: 80)])])
+        tileset.collections = [[
+            "dataset": .string("overturemaps.org"), "collection": .string("place"),
+            "licenses": .array([.string("https://l.example/1")]),
+        ]]
+        tileset.references = Self.references
+        let fake = try FakeServer(tilesets: [tileset])
+        let client = fake.client()
+        if fromCache {
+            _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+            fake.goOffline()
+        }
+        var first = try await client.place(origin: origin)
+        let original = first.attribution
+        #expect(original.first?.licenses == ["https://l.example/1"])
+        try #require(!first.attribution.isEmpty)
+        first.attribution[0].licenses?.append("https://l.example/changed")
+        first.attribution[0].release = "changed"
+        first.attribution.reverse()
+        first.place["name"] = .string("Changed")
+        let again = try await client.place(origin: origin)
+        #expect(again.attribution == original)
+        #expect(again.place == value)
+        if !fromCache { #expect(fake.requests.filter { $0.path == "/xrpc/org.atgeo.getPlace" }.count == 2) }
     }
 
     @Test("rejects an unknown origin with PlaceNotFound", arguments: [placeOrigin("nope"), "https://example.org/not-an-origin"])
@@ -105,7 +175,8 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         #expect(service == ServiceDescription(did: "did:web:places.atgeo.org", tilesets: [
             .init(slug: "overture-place", collections: [CollectionRef(dataset: "overturemaps.org", collection: "place")]),
             .init(slug: "osm", collections: [CollectionRef(dataset: "openstreetmap.org", collection: "way")]),
-        ]))
+        ], maxTiles: 50))
+        #expect(service.maxTiles == 50)
         #expect(service.tilesets.map(\.slug) == ["overture-place", "osm"])
     }
 
@@ -122,6 +193,18 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
                 dataset: "openstreetmap.org", collection: "node", release: nil, source: nil,
                 licenses: ["https://opendatacommons.org/licenses/odbl/"], attribution: nil)]))
         #expect(tileset.slug == "osm")
+    }
+
+    @Test("describeTileset passes the overview through")
+    func overview() async throws {
+        var withOverview = Self.osm
+        withOverview.overview = ["records": .number(1234)]
+        let tileset = try await FakeServer(tilesets: [withOverview]).client().describeTileset("osm")
+        #expect(tileset.overview == Tileset.Overview(records: 1234))
+        var expected = try await fake().client().describeTileset("osm")
+        expected.overview = Tileset.Overview(records: 1234)
+        #expect(tileset == expected)
+        #expect(try await fake().client().describeTileset("osm").overview == nil)
     }
 
     @Test("describeTileset asks the server each time")
@@ -285,22 +368,92 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         #expect(param(try #require(fake.requests.first), "collection") == "way")
     }
 
-    @Test("defaults to overturemaps.org / place when nothing is named")
-    func defaults() async throws {
+    // The reference's "requires dataset in the type" and its TypeError cases (missing, null, a number, an array, a
+    // collection named without a dataset, a missing dataset reported before an invalid region) have no runtime
+    // test here: `dataset` is a non-optional String, so a call without one does not compile, and nothing the
+    // compiler accepts can reach the client as "missing". What can be checked is the signature (SourceChecks, and
+    // PublicAPITests, which calls it with the labels in the contract's order) and the one runtime case below.
+    @Test("sends an empty dataset to the server, which answers for itself")
+    func emptyDataset() async throws {
         let fake = try setup()
-        _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
-        let first = try #require(fake.requests.first)
-        #expect(param(first, "dataset") == "overturemaps.org")
-        #expect(param(first, "collection") == "place")
+        await #expect(throws: AtgeoError.self) {
+            _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "")
+        }
+        let lists = fake.getTilesRequests
+        #expect(lists.count == 1)
+        #expect(param(try #require(lists.first), "dataset") == "")
+        #expect(URLComponents(url: try #require(lists.first), resolvingAgainstBaseURL: false)?.percentEncodedQueryItems?
+            .contains { $0.name == "dataset" } == true)
     }
 
-    @Test("takes overturemaps.org for a collection named alone")
-    func collectionAlone() async throws {
+    @Test("sends the collection only when the search has one")
+    func collectionOnlyWhenGiven() async throws {
         let fake = try setup()
-        _ = try? await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "division")
+        _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org")
         let first = try #require(fake.requests.first)
         #expect(param(first, "dataset") == "overturemaps.org")
-        #expect(param(first, "collection") == "division")
+        #expect(URLComponents(url: first, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name).contains("collection") == false)
+    }
+
+    @Test("gives each hit the collection its origin names, by prefix, and nil to a hit keyed by uri")
+    func hitCollections() async throws {
+        let places = try await setup().client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        let byOrigin = Dictionary(uniqueKeysWithValues: places.map { ($0.origin ?? "nil", $0.collection) })
+        #expect(byOrigin == [
+            "urn:atgeo:openstreetmap.org:node:1": CollectionKey(dataset: "openstreetmap.org", collection: "node"),
+            "urn:atgeo:openstreetmap.org:way:2": CollectionKey(dataset: "openstreetmap.org", collection: "way"),
+            "urn:atgeo:openstreetmap.org:relation:3": CollectionKey(dataset: "openstreetmap.org", collection: "relation"),
+            "https://example.org/r/u": nil,
+        ])
+    }
+
+    @Test("gives way and wayside hits their own collections")
+    func wayAndWayside() async throws {
+        let fake = try FakeServer(tilesets: [FakeTileset(
+            slug: "osm",
+            collections: ["way", "wayside"].map { ["dataset": .string("openstreetmap.org"), "collection": .string($0)] },
+            tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772)), record(Self.osm("wayside", "9", 37.773))])])])
+        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        #expect(Dictionary(uniqueKeysWithValues: places.map { ($0.origin ?? "", $0.collection?.collection) })
+                == ["urn:atgeo:openstreetmap.org:way:2": "way", "urn:atgeo:openstreetmap.org:wayside:9": "wayside"])
+    }
+
+    @Test("returns the union of the tile's attribution, references included, sorted")
+    func attributionUnion() async throws {
+        let fake = try FakeServer(tilesets: [FakeTileset(
+            slug: "osm",
+            collections: [
+                ["dataset": .string("openstreetmap.org"), "collection": .string("way"), "release": .string("2026-01-01"),
+                 "licenses": .array([.string("https://opendatacommons.org/licenses/odbl/")])],
+                ["dataset": .string("openstreetmap.org"), "collection": .string("relation")],
+            ],
+            references: [["dataset": .string("openstreetmap.org"), "collection": .string("node"), "source": .string("https://www.openstreetmap.org")]],
+            tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772))])])])
+        let result = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way")
+        #expect(result.attribution == [
+            Attribution(dataset: "openstreetmap.org", collection: "node", source: "https://www.openstreetmap.org"),
+            Attribution(dataset: "openstreetmap.org", collection: "relation"),
+            Attribution(dataset: "openstreetmap.org", collection: "way", release: "2026-01-01",
+                        licenses: ["https://opendatacommons.org/licenses/odbl/"]),
+        ])
+    }
+
+    // Contract §13: the sort of 4.10 uses the comparator of 4.3, UTF-16 code units. U+10000 (a surrogate pair,
+    // starting 0xD800) sorts before U+FF5E there, and after it by code point or String's <, which no fixture
+    // distinguishes (all names are in the basic multilingual plane).
+    @Test("sorts attribution by UTF-16 code units, not by code point")
+    func attributionOrdinalAboveTheBMP() async throws {
+        let astral = "\u{10000}", fullwidth = "\u{FF5E}"
+        #expect(astral.utf16.lexicographicallyPrecedes(fullwidth.utf16))
+        #expect(fullwidth.unicodeScalars.lexicographicallyPrecedes(astral.unicodeScalars))
+        let tiles = [FakeTile(url: tileURL("a"), records: [record(place("p", "P", [point(37.775, -122.415)]))])]
+        var tileset = overture(tiles)
+        tileset.references = [
+            ["dataset": .string(fullwidth), "collection": .string("c")],
+            ["dataset": .string(astral), "collection": .string("c")],
+        ]
+        let result = try await FakeServer(tilesets: [tileset]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        #expect(result.attribution.map(\.dataset) == ["overturemaps.org", astral, fullwidth])
     }
 }
 
@@ -318,6 +471,15 @@ private func sourceFiles() throws -> [(String, String)] {
 }
 
 @Suite("retired wire names and universal runtime") struct SourceChecks {
+    // `dataset` is required with no default (contract §4.1), which in Swift is a non-optional parameter, between
+    // `region` and `text`. The compiler enforces it for callers; this keeps a later edit from loosening it.
+    @Test("searchPlaces takes a required, non-optional dataset after region")
+    func datasetIsRequired() throws {
+        let client = try #require(try sourceFiles().first { $0.0 == "AtgeoClient.swift" }).1
+        #expect(client.firstMatch(of: /func searchPlaces\(\s*region: Region,\s*dataset: String,\s*text: String\? = nil,\s*collection: String\? = nil,\s*sort: SortMode = \.fused\s*\) async throws -> SearchResult/) != nil)
+        #expect(!client.contains("overturemaps.org"), "the client names no default dataset")
+    }
+
     @Test("reads the source files")
     func readsSources() throws {
         #expect(try sourceFiles().count >= 10)
