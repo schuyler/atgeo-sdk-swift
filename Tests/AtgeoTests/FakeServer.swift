@@ -33,6 +33,8 @@ struct FakeTileset: Sendable {
     /// Each holds `dataset` and `collection`, and may hold the other collectionInfo fields.
     var collections: [JSONObject]
     var references: [JSONObject]?
+    /// The tileset's overview band, as the descriptor carries it.
+    var overview: JSONObject?
     var tiles: [FakeTile]
 }
 
@@ -189,7 +191,12 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
             guard tileset.collections.contains(where: { $0["dataset"]?.stringValue == dataset && $0["collection"]?.stringValue == collection }) else { continue }
             for tile in tileset.tiles {
                 if let found = tile.records.first(where: { $0["value"]?["origin"]?.stringValue.map { ordinalEqual($0, origin) } ?? false }) {
-                    var body: JSONObject = ["uri": .string("\(server)/\(dataset)/\(collection)/\(rest)"), "record": found["value"]!]
+                    // The wire shape of garganorn#15: the origin echoed as `uri`, the web address as `url`, the record
+                    // as `value`, and the attribution of the place's tileset, which every tile of it carries too.
+                    var body: JSONObject = [
+                        "uri": .string(origin), "url": .string("\(server)/\(dataset)/\(collection)/\(rest)"),
+                        "value": found["value"]!, "attribution": .array(Self.attributionList(tileset)),
+                    ]
                     if let importance = found["importance"] { body["importance"] = importance }
                     return answer(body)
                 }
@@ -202,6 +209,7 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
         let host = URL(string: server)?.host ?? ""
         return [
             "did": .string("did:web:\(host)"),
+            "maxTiles": .number(50),
             "tilesets": .array(tilesets.map { t in
                 .object([
                     "slug": t.slug.map(JSONValue.string) ?? .null,
@@ -217,14 +225,20 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
         var d: JSONObject = ["collections": .array(t.collections.map(JSONValue.object))]
         if let slug = t.slug { d["slug"] = .string(slug) }
         if let references = t.references { d["references"] = .array(references.map(JSONValue.object)) }
+        if let overview = t.overview { d["overview"] = .object(overview) }
         return d
     }
 
-    private static func tileBody(_ t: FakeTileset, _ records: [JSONValue]) -> JSONObject {
+    /// The attribution every tile of the tileset carries, and getPlace answers with: its collections, then its
+    /// references.
+    private static func attributionList(_ t: FakeTileset) -> [JSONValue] {
         let attributionKeys = ["dataset", "collection", "release", "source", "licenses", "attribution"]
-        let attribution = t.collections.map { c in JSONValue.object(c.filter { attributionKeys.contains($0.key) }) }
+        return t.collections.map { c in JSONValue.object(c.filter { attributionKeys.contains($0.key) }) }
             + (t.references ?? []).map(JSONValue.object)
-        return ["publishedAt": .string(publishedAt), "attribution": .array(attribution), "records": .array(records)]
+    }
+
+    private static func tileBody(_ t: FakeTileset, _ records: [JSONValue]) -> JSONObject {
+        ["publishedAt": .string(publishedAt), "attribution": .array(attributionList(t)), "records": .array(records)]
     }
 
     /// Validates a response the fake builds itself; an invalid one is a bug in the test, so it fails the test.
@@ -307,8 +321,11 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
             if let overview = body["overview"], overview.boolValue == nil { return "overview must be a boolean" }
             return nil
         }
-        if body["record"] != nil {
-            return body["uri"]?.stringValue == nil ? "getPlace needs a uri" : nil
+        if body["value"] != nil {
+            guard body["uri"]?.stringValue != nil, body["url"]?.stringValue != nil else { return "getPlace needs a uri and a url" }
+            guard body["value"]?.objectValue != nil else { return "getPlace value must be an object" }
+            if let importance = body["importance"], !isInteger(importance) { return "getPlace importance must be an integer" }
+            return body["attribution"]?.arrayValue == nil ? "getPlace needs an attribution list" : nil
         }
         if body["did"] != nil || body["tilesets"] != nil {
             return body["did"]?.stringValue == nil || body["tilesets"]?.arrayValue == nil ? "describeService needs did and tilesets" : nil
