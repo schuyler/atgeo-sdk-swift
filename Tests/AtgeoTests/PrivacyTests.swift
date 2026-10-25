@@ -87,3 +87,38 @@ private func wire(_ requests: [URL]) -> [String] {
         #expect(param(url, "uri") == placeOrigin("r1"))
     }
 }
+
+// Port of "failed tiles carry no search text" (contract §12): a failed-tile entry is built from the tile URL and what
+// fetching it produced, nothing from the search text.
+@Suite("failed tiles carry no search text") struct FailedTilesCarryNoText {
+    /// Tile b answers a page that is not a tile, c throws, d answers 500 with a `null` body; a fails in the fake.
+    private struct Breaking: HTTPTransport {
+        var base: FakeServer
+        var tiles: [String]
+        func get(_ url: URL) async throws -> HTTPResponse {
+            switch url.absoluteString {
+            case tiles[1]: return HTTPResponse(status: 200, body: Data("<html>not a tile</html>".utf8))
+            case tiles[2]: throw URLError(.cannotConnectToHost)
+            case tiles[3]: return HTTPResponse(status: 500, body: Data("null".utf8))
+            default: return try await base.get(url)
+            }
+        }
+    }
+
+    @Test func leavesEveryFormOfTheTextOutOfTileFailures() async throws {
+        let tiles = ["a", "b", "c", "d"].map { "https://tiles.example/\($0).json" }
+        let records = tiles.map { FakeTile(url: $0, records: [record(place("r1", "Zanzibar Quokka Cafe", [point(37.775, -122.418)]))]) }
+        let server = try FakeServer(tilesets: [overture(records)], failTiles: [tiles[0]])
+        let text = "  ZANZIBÁR   quokka "
+        let result = try await AtgeoClient(server: URL(string: defaultServer)!, transport: Breaking(base: server, tiles: tiles))
+            .searchPlaces(region: .circle(lat: 37.7749295, lon: -122.4194155, radius: 500), dataset: "overturemaps.org", text: text, collection: "place")
+        #expect(result.tileFailures.map(\.kind) == [.status, .decode, .transport, .status])
+        let haystack = result.tileFailures.map { f in
+            [f.url, "\(f.kind)", f.status.map(String.init) ?? "", String(describing: f.error), f.error?.localizedDescription ?? "", "\(f)"]
+                .joined(separator: "\u{1}")
+        }.joined(separator: "\u{2}").lowercased()
+        for needle in [text.lowercased(), text.trimmingCharacters(in: .whitespaces).lowercased(), "zanzibar quokka", "zanzib", "quokka"] {
+            #expect(!haystack.contains(needle), "\(needle) in the failures")
+        }
+    }
+}

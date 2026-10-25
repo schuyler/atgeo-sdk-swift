@@ -60,7 +60,9 @@ do {
     guard let served = service.tilesets.first(where: { $0.collections.contains { wanted(dataset: $0.dataset, collection: $0.collection) } }),
         let slug = served.slug
     else { fail("\(wantedName) not served") }
-    log("describeService", "\(service.did ?? "no did"), \(service.tilesets.count) tileset(s)")
+    // maxTiles and attribution arrive with the server that implements garganorn#27; this fails against an older one.
+    check(service.maxTiles.map { $0 > 0 } ?? false, "describeService has no maxTiles")
+    log("describeService", "\(service.did ?? "no did"), \(service.tilesets.count) tileset(s), maxTiles \(service.maxTiles ?? 0)")
 
     let tileset = try await client.describeTileset(slug)
     check(
@@ -75,6 +77,10 @@ do {
     check(
         distances.indices.allSatisfy { i in distances[i] <= radius && (i == 0 || distances[i] >= distances[i - 1]) },
         "not distance-ordered within radius")
+    check(
+        nearby.attribution.contains { wanted(dataset: $0.dataset, collection: $0.collection) },
+        "the search's attribution does not credit \(wantedName)")
+    check(nearby.places.contains { $0.collection != nil }, "no hit names its collection")
     log("searchPlaces (no text)", "\(nearby.places.count) places from \(nearby.tiles.fetched) tile(s)")
 
     guard let named = nearby.places.first(where: { $0.origin != nil && !($0.place["name"]?.stringValue ?? "").isEmpty }),
@@ -91,7 +97,8 @@ do {
     let fresh = AtgeoClient(server: server)
     let record = try await fresh.place(origin: origin)
     check(record.place["name"]?.stringValue == name, "getPlace name \(record.place["name"] ?? .null) is not \(name)")
-    log("getPlace", "\(origin) -> \(name)")
+    check(!record.attribution.isEmpty, "getPlace answered with no attribution")
+    log("getPlace", "\(origin) -> \(name), \(record.attribution.count) attribution entr(ies)")
 
     // The parse the client runs on every tile, into JSONValue. Median of five.
     guard let largest = await transport.tiles.bodies.max(by: { $0.count < $1.count }) else { fail("no tile fetched") }

@@ -96,6 +96,12 @@ private func check(_ result: SearchResult, against s: AttributionScenario) throw
         #expect(collection == .null)
         return key(origin, nil, nil)
     }
+    // The encoded collection has exactly the two keys, which a type carrying more of the entry would fail.
+    for hit in result.places {
+        if let collection = hit.collection {
+            #expect(try decodeJSON(JSONEncoder().encode(collection)).objectValue?.keys.sorted() == ["collection", "dataset"])
+        }
+    }
     let got = result.places.map { key($0.origin, $0.collection?.dataset, $0.collection?.collection) }
     #expect(got.sorted() == s.hits.map { key($0.origin, $0.collection) }.sorted())
 }
