@@ -116,7 +116,7 @@ struct TileCache {
     /// larger than the budget evicts every other tile and then itself. Replacing a URL subtracts its old size.
     /// Returns the new entry's generation.
     @discardableResult
-    mutating func insert(_ url: String, body: Data, keys: Set<Int>, size: Int, attribution: [Attribution] = []) -> Int {
+    mutating func insert(_ url: String, body: Data, keys: Set<Int>, size: Int, attribution: [Attribution]) -> Int {
         let key = OrdinalKey(url)
         if let old = entries[key] { total -= old.size }
         generations += 1

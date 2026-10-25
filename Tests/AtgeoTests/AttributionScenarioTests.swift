@@ -156,3 +156,83 @@ private func check(_ result: SearchResult, against s: AttributionScenario) throw
         try check(result, against: s)
     }
 }
+
+// A hit's collection comes from its own tile's attribution, not from the first used tile's, and not from the tile
+// that sat at the record's position before text, dedupe or a filter dropped records ahead of it (contract §8).
+@Suite("a hit's collection is its own tile's") struct HitCollectionFromItsOwnTile {
+    private func rec(_ origin: String, _ name: String) -> JSONValue {
+        .object(["value": .object([
+            "$type": .string("org.atgeo.place"), "origin": .string(origin), "name": .string(name),
+            "locations": .array([.object([
+                "$type": .string("community.lexicon.location.geo"),
+                "latitude": .string("37.770000"), "longitude": .string("-122.415000"),
+            ])]),
+        ])])
+    }
+
+    private func tile(_ name: String, _ records: [JSONValue], _ collection: String) -> AttributionScenario.Tile {
+        .init(url: "https://places.atgeo.org/tiles/\(name)", body: .object([
+            "records": .array(records),
+            "attribution": .array([.object(["dataset": .string("d"), "collection": .string(collection)])]),
+        ]), status: nil)
+    }
+
+    private func search(_ tiles: [AttributionScenario.Tile], text: String? = nil) async throws -> SearchResult {
+        let s = AttributionScenario(
+            name: "own tile", dataset: "d", collection: nil, region: .bbox(west: -122.42, south: 37.76, east: -122.41, north: 37.78),
+            tiles: tiles, attribution: [], hits: [])
+        return try await AtgeoClient(server: URL(string: serverBase)!, transport: ScenarioServer(scenario: s))
+            .searchPlaces(region: s.region, dataset: "d", text: text)
+    }
+
+    private func collections(_ r: SearchResult) -> [String: CollectionKey?] {
+        Dictionary(uniqueKeysWithValues: r.places.map { ($0.origin ?? "", $0.collection) })
+    }
+
+    @Test func eachHitTakesItsOwnTilesCollection() async throws {
+        let r = try await search([
+            tile("a.json", [rec("urn:atgeo:d:c1:1", "One")], "c1"),
+            tile("b.json", [rec("urn:atgeo:d:c2:2", "Two")], "c2"),
+        ])
+        #expect(collections(r) == [
+            "urn:atgeo:d:c1:1": CollectionKey(dataset: "d", collection: "c1"),
+            "urn:atgeo:d:c2:2": CollectionKey(dataset: "d", collection: "c2"),
+        ])
+    }
+
+    @Test func aRecordDroppedByTheTextScoreDoesNotShiftTheCollections() async throws {
+        let r = try await search([
+            tile("a.json", [rec("urn:atgeo:d:c1:1", "Zzzzqqq")], "c1"),
+            tile("b.json", [rec("urn:atgeo:d:c2:2", "Cafe")], "c2"),
+        ], text: "Cafe")
+        #expect(r.places.map(\.origin) == ["urn:atgeo:d:c2:2"])
+        #expect(r.places.first?.collection == CollectionKey(dataset: "d", collection: "c2"))
+    }
+
+    @Test func aRecordDroppedByDedupeDoesNotShiftTheCollections() async throws {
+        let r = try await search([
+            tile("a.json", [rec("urn:atgeo:d:c1:1", "One"), rec("urn:atgeo:d:c1:1", "One")], "c1"),
+            tile("b.json", [rec("urn:atgeo:d:c2:2", "Two")], "c2"),
+        ])
+        #expect(collections(r) == [
+            "urn:atgeo:d:c1:1": CollectionKey(dataset: "d", collection: "c1"),
+            "urn:atgeo:d:c2:2": CollectionKey(dataset: "d", collection: "c2"),
+        ])
+    }
+
+    @Test func aRecordDroppedByTheRegionFilterDoesNotShiftTheCollections() async throws {
+        var far = rec("urn:atgeo:d:c1:1", "One")
+        if case .object(var o) = far, case .object(var v)? = o["value"] {
+            v["locations"] = .array([.object([
+                "$type": .string("community.lexicon.location.geo"), "latitude": .string("10"), "longitude": .string("10"),
+            ])])
+            o["value"] = .object(v)
+            far = .object(o)
+        }
+        let r = try await search([
+            tile("a.json", [far], "c1"),
+            tile("b.json", [rec("urn:atgeo:d:c2:2", "Two")], "c2"),
+        ])
+        #expect(collections(r) == ["urn:atgeo:d:c2:2": CollectionKey(dataset: "d", collection: "c2")])
+    }
+}

@@ -31,7 +31,7 @@ public actor AtgeoClient {
     /// Caches `body` under `url` as if it had been fetched, without parsing it; for tests of a cached tile
     /// that fails to parse again, which a real fetch cannot cache.
     func cacheUnparsedTile(_ url: String, body: Data) {
-        _ = tiles.insert(url, body: body, keys: [], size: body.count)
+        _ = tiles.insert(url, body: body, keys: [], size: body.count, attribution: [])
     }
     private var tileLists: TtlCache<TileList>
     private var service: TtlCache<ServiceDescription>
@@ -89,11 +89,9 @@ public actor AtgeoClient {
         try validateRegion(region)
         let query = normalize(text ?? "")
         if sort == .similarity && query.isEmpty { throw AtgeoArgumentError.similarityRequiresText }
-        let resolvedCollection = collection
-        let resolvedDataset = dataset
         // No checkCancellation() here: a fully cached search completes even when cancelled (contract §11).
 
-        let lists = try await tileLists(dataset: resolvedDataset, collection: resolvedCollection, bboxes: queryBboxes(region))
+        let lists = try await tileLists(dataset: dataset, collection: collection, bboxes: queryBboxes(region))
         var seen = Set<OrdinalKey>()
         let urls = lists.flatMap(\.tiles).filter { seen.insert(OrdinalKey($0)).inserted }.sorted(by: ordinalLess)
         let (loaded, failures) = try await fetchTiles(urls)
@@ -104,7 +102,7 @@ public actor AtgeoClient {
         let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
         let result = SearchResult(
             places: assemble(records, region: region, query: query, sort: sort,
-                             dataset: resolvedDataset, collection: resolvedCollection),
+                             dataset: dataset, collection: collection),
             complete: failures.isEmpty,
             overview: lists.contains(where: \.overview),
             tiles: .init(fetched: loaded.count, failed: failures.count),

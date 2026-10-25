@@ -181,12 +181,12 @@ private let steps: [Step] = [
     func generations() {
         var cache = TileCache(budget: 100)
         let a = body(["x"]), b = body(["y"])
-        let first = cache.insert("a", body: a.body, keys: a.keys, size: 10)
+        let first = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
         #expect(cache.read("a")?.records == nil)
         cache.keepParsed([("a", first, a.records)])
         #expect(cache.read("a")?.records == a.records)
         // Replacing the URL drops the memo, and records from the old entry are refused.
-        let second = cache.insert("a", body: b.body, keys: b.keys, size: 10)
+        let second = cache.insert("a", body: b.body, keys: b.keys, size: 10, attribution: [])
         #expect(cache.read("a")?.records == nil)
         cache.keepParsed([("a", first, a.records)])
         #expect(cache.read("a")?.records == nil)
@@ -198,11 +198,11 @@ private let steps: [Step] = [
     func eviction() {
         var cache = TileCache(budget: 20)
         let a = body(["x"]), b = body(["y"]), c = body(["z"])
-        let ga = cache.insert("a", body: a.body, keys: a.keys, size: 10)
-        let gb = cache.insert("b", body: b.body, keys: b.keys, size: 10)
+        let ga = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
+        let gb = cache.insert("b", body: b.body, keys: b.keys, size: 10, attribution: [])
         cache.keepParsed([("a", ga, a.records), ("b", gb, b.records)])
         #expect(cache.memoized == ["a", "b"])
-        let gc = cache.insert("c", body: c.body, keys: c.keys, size: 10)
+        let gc = cache.insert("c", body: c.body, keys: c.keys, size: 10, attribution: [])
         #expect(cache.memoized == ["b"])
         // An evicted tile is not memoized again.
         cache.keepParsed([("a", ga, a.records), ("c", gc, c.records)])
@@ -214,7 +214,7 @@ private let steps: [Step] = [
     func off() {
         var cache = TileCache(budget: 20, memoize: false)
         let a = body(["x"])
-        let g = cache.insert("a", body: a.body, keys: a.keys, size: 10)
+        let g = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
         cache.keepParsed([("a", g, a.records)])
         #expect(cache.memoized.isEmpty)
         #expect(cache.read("a")?.records == nil)
@@ -225,7 +225,7 @@ private let steps: [Step] = [
         var cache = TileCache(budget: 100)
         for (url, origins) in [("c", ["k"]), ("a", ["j", "k"]), ("b", ["j"])] {
             let t = body(origins)
-            cache.insert(url, body: t.body, keys: t.keys, size: 1)
+            cache.insert(url, body: t.body, keys: t.keys, size: 1, attribution: [])
         }
         #expect(cache.lookup(key: "k").map(\.body) == [body(["j", "k"]).body, body(["k"]).body])
         #expect(cache.lookup(key: "q").isEmpty)

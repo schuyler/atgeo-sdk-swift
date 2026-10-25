@@ -7,7 +7,7 @@ import Foundation
 extension TileCache {
     mutating func set(_ url: String, records: [TileRecord], size: Int) {
         let body = try! JSONEncoder().encode(JSONValue.object(["records": .array(records.map(wire))]))
-        insert(url, body: body, keys: try! parseTile(body).keys, size: size)
+        insert(url, body: body, keys: try! parseTile(body).keys, size: size, attribution: [])
     }
 
     mutating func get(_ url: String) -> [TileRecord]? {
