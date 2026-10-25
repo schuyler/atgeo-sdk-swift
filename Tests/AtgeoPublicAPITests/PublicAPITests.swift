@@ -82,7 +82,7 @@ import Atgeo  // not @testable: everything here must be reachable from an app
             }
         }
         let client = AtgeoClient(transport: Canned())
-        let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), text: "here")
+        let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", text: "here", collection: "place")
         #expect(result.places.map(\.origin) == ["urn:atgeo:overturemaps.org:place:1"])
         #expect(result.complete && result.tileFailures.isEmpty)
     }
@@ -97,7 +97,7 @@ import Atgeo  // not @testable: everything here must be reachable from an app
                 return HTTPResponse(status: 404, body: Data())
             }
         }
-        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10))
+        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures.map(\.url) == ["file:///x", "https://tiles.example/0.json", "https://tiles.example/1.json"])
         #expect(result.tileFailures.map(\.kind) == [.refused, .transport, .status])
         #expect(result.tileFailures.map(\.status) == [nil, nil, 404])

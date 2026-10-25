@@ -5,7 +5,7 @@ import Testing
 // No reference counterpart: the reference has no test of the in-flight cap, cancellation, or a retry after a
 // failed getTiles (design review, step 8).
 
-private let sf = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sf = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 
 private func manyTiles(_ n: Int) throws -> FakeServer {
     try FakeServer(tilesets: [overture((0..<n).map { i in
@@ -28,7 +28,7 @@ private final class Counter: @unchecked Sendable {
     @Test func atMostEightTilesAreInFlight() async throws {
         let server = try manyTiles(20)
         let delaying = DelayingTransport(server) { $0.absoluteString.hasPrefix("https://tiles.example/") ? 0.05 : nil }
-        let result = try await client(delaying).searchPlaces(region: sf)
+        let result = try await client(delaying).searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 20, failed: 0))
         #expect(result.places.count == 20)
         #expect(delaying.peakInFlight == 8)
@@ -41,7 +41,7 @@ private final class Counter: @unchecked Sendable {
         // seconds for its tiles. Cancellation must still beat the held tile's 300 s by a wide margin.
         let delaying = DelayingTransport(server) { $0.absoluteString == held ? 300 : nil }
         let c = client(delaying)
-        let task = Task { try await c.searchPlaces(region: sf) }
+        let task = Task { try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
         // Wait until the held tile is in flight, then cancel.
         let deadline = Date().addingTimeInterval(120)
         while delaying.completionOrder.count < 3 && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
@@ -59,11 +59,11 @@ private final class Counter: @unchecked Sendable {
     @Test func aCancelledTaskOnAWarmCacheStillReturns() async throws {
         let server = try manyTiles(3)
         let c = client(server)
-        let warm = try await c.searchPlaces(region: sf)
+        let warm = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
         let task = Task { () async throws -> SearchResult in
             while !Task.isCancelled { await Task.yield() }
-            return try await c.searchPlaces(region: sf)
+            return try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         }
         task.cancel()
         #expect(try await task.value == warm)
@@ -76,8 +76,8 @@ private final class Counter: @unchecked Sendable {
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             tilesFor: { _ in calls.next() == 1 ? .error(code: "InternalServerError", message: "try again") : .tiles([tile]) })
         let c = server.client()
-        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again", status: 400)) { _ = try await c.searchPlaces(region: sf) }
-        let result = try await c.searchPlaces(region: sf)
+        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again", status: 400)) { _ = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
+        let result = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(server.getTilesRequests.count == 2)
         #expect(result.places.count == 1)
     }
@@ -87,7 +87,7 @@ private final class Counter: @unchecked Sendable {
         let delaying = DelayingTransport(server) { $0.absoluteString.hasPrefix("https://tiles.example/") ? 0.01 : nil }
         let c = client(delaying)
         let results = try await withThrowingTaskGroup(of: SearchResult.self) { group in
-            for _ in 0..<6 { group.addTask { try await c.searchPlaces(region: sf, text: "P1") } }
+            for _ in 0..<6 { group.addTask { try await c.searchPlaces(region: sf, dataset: "overturemaps.org", text: "P1", collection: "place") } }
             return try await group.reduce(into: []) { $0.append($1) }
         }
         #expect(results.allSatisfy { $0.places == results[0].places })

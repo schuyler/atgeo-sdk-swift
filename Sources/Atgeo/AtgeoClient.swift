@@ -9,8 +9,6 @@ public actor AtgeoClient {
     public static let defaultServer = URL(string: "https://places.atgeo.org")!
     public static let defaultCacheBudgetBytes = 50 * 1024 * 1024
 
-    private static let defaultDataset = "overturemaps.org"
-    private static let defaultCollection = "place"
     private static let maxTilesInFlight = 8
     private static let ttl: TimeInterval = 3600
 
@@ -73,8 +71,8 @@ public actor AtgeoClient {
 
     /// Places in `region`, filtered and ranked on the device by `text` (contract §4).
     ///
-    /// Without a dataset the search covers `overturemaps.org` / `place`; with a dataset and no collection,
-    /// the whole dataset.
+    /// `dataset` is required and has no default (contract §4.1). With a `collection` the search covers that
+    /// collection; without one, the whole dataset.
     ///
     /// - Throws: `AtgeoArgumentError` before any request, for an invalid region or for `.similarity` without
     ///   text; `AtgeoError` when `getTiles` answers non-2xx; `DecodingError` when its body holds no tile
@@ -82,17 +80,16 @@ public actor AtgeoClient {
     ///   `tileFailures` and counted in `tiles.failed`, never thrown, unless the search was cancelled.
     public func searchPlaces(
         region: Region,
+        dataset: String,
         text: String? = nil,
-        dataset: String? = nil,
         collection: String? = nil,
         sort: SortMode = .fused
     ) async throws -> SearchResult {
         try validateRegion(region)
         let query = normalize(text ?? "")
         if sort == .similarity && query.isEmpty { throw AtgeoArgumentError.similarityRequiresText }
-        // Contract §4.1: the collection defaults only when the dataset does.
-        let resolvedCollection = collection ?? (dataset == nil ? Self.defaultCollection : nil)
-        let resolvedDataset = dataset ?? Self.defaultDataset
+        let resolvedCollection = collection
+        let resolvedDataset = dataset
         // No checkCancellation() here: a fully cached search completes even when cancelled (contract §11).
 
         let lists = try await tileLists(dataset: resolvedDataset, collection: resolvedCollection, bboxes: queryBboxes(region))

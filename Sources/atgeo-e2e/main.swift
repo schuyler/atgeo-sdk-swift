@@ -80,7 +80,7 @@ do {
     guard let named = nearby.places.first(where: { $0.origin != nil && !($0.place["name"]?.stringValue ?? "").isEmpty }),
         let origin = named.origin, let name = named.place["name"]?.stringValue
     else { fail("no named place in region") }
-    let matched = try await client.searchPlaces(region: region, text: name, dataset: dataset, collection: collection)
+    let matched = try await client.searchPlaces(region: region, dataset: dataset, text: name, collection: collection)
     check(
         matched.places.contains { $0.origin == origin && $0.score != nil },
         "named place missing from text search")

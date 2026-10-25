@@ -18,7 +18,7 @@ private func scenarios() throws -> [RankingScenario] {
         let r = try #require(s["region"])
         let region: Region
         if let b = r["bbox"]?.arrayValue?.compactMap(\.doubleValue), b.count == 4 {
-            region = .bbox(minLon: b[0], minLat: b[1], maxLon: b[2], maxLat: b[3])
+            region = .bbox(west: b[0], south: b[1], east: b[2], north: b[3])
         } else {
             region = .circle(
                 lat: try #require(r["lat"]?.doubleValue), lon: try #require(r["lon"]?.doubleValue),
@@ -123,7 +123,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
     @Test("ranking scenarios", arguments: try scenarios())
     func scenario(_ s: RankingScenario) async throws {
         let server = try FakeServer(tilesets: [overture([FakeTile(url: "https://places.atgeo.org/tiles/t0.json", records: s.records)])])
-        let places = try await server.client().searchPlaces(region: s.region, text: s.text, sort: s.sort).places
+        let places = try await server.client().searchPlaces(region: s.region, dataset: "overturemaps.org", text: s.text, collection: "place", sort: s.sort).places
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {
             for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }

@@ -17,21 +17,24 @@ public struct SearchResult: Sendable, Equatable, Codable {
     public var tiles: TileCounts
     /// Each tile that failed, in tile URL order (contract §4.4); `tiles.failed` is its count.
     public var tileFailures: [TileFailure]
+    /// The credit for every collection whose data the search's tiles hold (contract §4.10).
+    public var attribution: [Attribution]
     public struct TileCounts: Sendable, Equatable, Codable {
         public var fetched: Int
         public var failed: Int
         public init(fetched: Int, failed: Int) { self.fetched = fetched; self.failed = failed }
     }
 
-    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts, tileFailures: [TileFailure] = []) {
+    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts, tileFailures: [TileFailure] = [], attribution: [Attribution] = []) {
         self.places = places
         self.complete = complete
         self.overview = overview
         self.tiles = tiles
         self.tileFailures = tileFailures
+        self.attribution = attribution
     }
 
-    private enum CodingKeys: String, CodingKey { case places, complete, overview, tiles, tileFailures }
+    private enum CodingKeys: String, CodingKey { case places, complete, overview, tiles, tileFailures, attribution }
 
     /// Written by hand so that a result encoded before `tileFailures` existed still decodes, with none.
     public init(from decoder: any Decoder) throws {
@@ -41,6 +44,7 @@ public struct SearchResult: Sendable, Equatable, Codable {
         overview = try c.decode(Bool.self, forKey: .overview)
         tiles = try c.decode(TileCounts.self, forKey: .tiles)
         tileFailures = try c.decodeIfPresent([TileFailure].self, forKey: .tileFailures) ?? []
+        attribution = try c.decodeIfPresent([Attribution].self, forKey: .attribution) ?? []
     }
 }
 
@@ -91,13 +95,16 @@ public struct SearchHit: Sendable, Equatable, Codable {
     public var importance: Int64?
     public var distance: Double      // metres
     public var score: Double?        // 0...1, nil without text
+    /// The collection the hit belongs to, matched against its tile's attribution (contract §8); nil when none matches.
+    public var collection: CollectionKey?
 
-    public init(origin: String?, place: JSONObject, importance: Int64?, distance: Double, score: Double?) {
+    public init(origin: String?, place: JSONObject, importance: Int64?, distance: Double, score: Double?, collection: CollectionKey? = nil) {
         self.origin = origin
         self.place = place
         self.importance = importance
         self.distance = distance
         self.score = score
+        self.collection = collection
     }
 }
 
@@ -105,11 +112,39 @@ public struct PlaceRecord: Sendable, Equatable, Codable {
     public var origin: String
     public var place: JSONObject
     public var importance: Int64?
+    /// The collections the place's data comes from, as served and in served order (contract §9); empty when none.
+    public var attribution: [Attribution]
 
-    public init(origin: String, place: JSONObject, importance: Int64?) {
+    public init(origin: String, place: JSONObject, importance: Int64?, attribution: [Attribution] = []) {
         self.origin = origin
         self.place = place
         self.importance = importance
+        self.attribution = attribution
+    }
+}
+
+/// The dataset and collection a hit belongs to (contract §8).
+public struct CollectionKey: Sendable, Hashable, Codable {
+    public var dataset: String
+    public var collection: String
+    public init(dataset: String, collection: String) { self.dataset = dataset; self.collection = collection }
+}
+
+/// A credit for one collection (`org.atgeo.defs#collectionAttribution`), read leniently (contract §1).
+public struct Attribution: Sendable, Hashable, Codable {
+    public var dataset: String
+    public var collection: String
+    public var release: String?, source: String?, licenses: [String]?, attribution: String?
+    public init(
+        dataset: String, collection: String,
+        release: String? = nil, source: String? = nil, licenses: [String]? = nil, attribution: String? = nil
+    ) {
+        self.dataset = dataset
+        self.collection = collection
+        self.release = release
+        self.source = source
+        self.licenses = licenses
+        self.attribution = attribution
     }
 }
 
@@ -121,6 +156,8 @@ public struct CollectionRef: Sendable, Equatable, Codable {
 
 public struct ServiceDescription: Sendable, Equatable, Codable {
     public var did: String?
+    /// The server's tile budget; informational (contract §9).
+    public var maxTiles: Int64?
     public var tilesets: [ServedTileset]        // empty when missing
     public struct ServedTileset: Sendable, Equatable, Codable {
         public var slug: String?
@@ -128,7 +165,11 @@ public struct ServiceDescription: Sendable, Equatable, Codable {
         public init(slug: String?, collections: [CollectionRef]) { self.slug = slug; self.collections = collections }
     }
 
-    public init(did: String?, tilesets: [ServedTileset]) { self.did = did; self.tilesets = tilesets }
+    public init(did: String?, tilesets: [ServedTileset], maxTiles: Int64? = nil) {
+        self.did = did
+        self.tilesets = tilesets
+        self.maxTiles = maxTiles
+    }
 }
 
 public struct CollectionAttribution: Sendable, Equatable, Codable {
@@ -185,6 +226,12 @@ public struct Tileset: Sendable, Equatable, Codable {
     public var extent: Extent?
     public var collections: [CollectionInfo]    // empty when missing
     public var references: [CollectionAttribution]?
+    /// The tileset's overview band, when it has one (contract §9).
+    public var overview: Overview?
+    public struct Overview: Sendable, Equatable, Codable {
+        public var records: Int64?
+        public init(records: Int64?) { self.records = records }
+    }
     public struct Extent: Sendable, Equatable, Codable {
         public var north: String?, south: String?, east: String?, west: String?
         public init(north: String?, south: String?, east: String?, west: String?) {
@@ -197,13 +244,14 @@ public struct Tileset: Sendable, Equatable, Codable {
 
     public init(
         slug: String?, publishedAt: String? = nil, extent: Extent? = nil,
-        collections: [CollectionInfo], references: [CollectionAttribution]? = nil
+        collections: [CollectionInfo], references: [CollectionAttribution]? = nil, overview: Overview? = nil
     ) {
         self.slug = slug
         self.publishedAt = publishedAt
         self.extent = extent
         self.collections = collections
         self.references = references
+        self.overview = overview
     }
 }
 
@@ -213,6 +261,13 @@ struct TileRecord: Sendable, Equatable {
     var value: JSONObject
     var uri: String?
     var importance: Int64?
+}
+
+/// A tile payload as the lenient reader keeps it (contract §1): the usable records, and the `attribution`
+/// when the payload has an array there.
+struct TilePayload: Sendable, Equatable {
+    var records: [TileRecord]
+    var attribution: [Attribution]?
 }
 
 // MARK: - Lenient readers
@@ -255,6 +310,11 @@ func tileRecords(_ payload: JSONValue) throws -> [TileRecord] {
         guard let value = r["value"]?.objectValue else { return nil }
         return TileRecord(value: value, uri: r["uri"]?.stringValue, importance: int64(r["importance"]))
     }
+}
+
+/// A tile payload: `tileRecords` and the attribution (contract §1).
+func tilePayload(_ payload: JSONValue) throws -> TilePayload {
+    TilePayload(records: try tileRecords(payload), attribution: nil)
 }
 
 /// A getTiles body: the string entries of `tiles`, and `overview` by JavaScript truthiness. No `tiles`

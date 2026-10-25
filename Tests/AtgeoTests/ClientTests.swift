@@ -4,7 +4,7 @@ import Testing
 
 // Port of test/client.test.ts.
 
-private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 
 @Suite("place(origin:)") struct GetPlace {
     let value = place("r1", "Ferry Building", [point(37.7955, -122.3937)], [
@@ -44,7 +44,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         let fake = try setup()
         let network = try await fake.client().place(origin: origin)
         let fresh = fake.client()
-        _ = try await fresh.searchPlaces(region: .bbox(minLon: -122.40, minLat: 37.79, maxLon: -122.39, maxLat: 37.80))
+        _ = try await fresh.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place")
         let before = fake.requests.count
         #expect(try await fresh.place(origin: origin) == network)
         #expect(fake.requests.count == before)
@@ -54,7 +54,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
     func noRequestForAHit() async throws {
         let fake = try setup()
         let client = fake.client()
-        let places = try await client.searchPlaces(region: .bbox(minLon: -122.40, minLat: 37.79, maxLon: -122.39, maxLat: 37.80)).places
+        let places = try await client.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place").places
         let before = fake.requests.count
         _ = try await client.place(origin: try #require(places.first?.origin))
         #expect(fake.requests.count == before)
@@ -160,7 +160,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
 
     @Test("returns origin, the wire place, importance, metres distance and nil score without text")
     func shape() async throws {
-        let result = try await setup().searchPlaces(region: Self.circle)
+        let result = try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place")
         let cafe = try #require(result.places.first { $0.origin == placeOrigin("cafe") })
         #expect(cafe.place == Self.records[0].value)
         #expect(cafe.place["importance"] == nil)
@@ -171,12 +171,12 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
 
     @Test("gives distance 0 to a bbox containing the center")
     func containingBox() async throws {
-        #expect(try await setup().searchPlaces(region: Self.circle).places.first { $0.origin == placeOrigin("division") }?.distance == 0)
+        #expect(try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place").places.first { $0.origin == placeOrigin("division") }?.distance == 0)
     }
 
     @Test("returns a numeric score with text")
     func scoreWithText() async throws {
-        let result = try await setup().searchPlaces(region: Self.circle, text: "Zanzibar Cafe")
+        let result = try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", text: "Zanzibar Cafe", collection: "place")
         let cafe = try #require(result.places.first { $0.origin == placeOrigin("cafe") })
         // vitest's toBeCloseTo(1, 2) is |diff| < 0.005.
         #expect(abs((cafe.score ?? 0) - 1) < 0.005)
@@ -186,8 +186,8 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
     @Test("treats text that normalizes to empty as no text")
     func blankText() async throws {
         let client = try setup()
-        let none = try await client.searchPlaces(region: Self.circle)
-        let blank = try await client.searchPlaces(region: Self.circle, text: "   ")
+        let none = try await client.searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place")
+        let blank = try await client.searchPlaces(region: Self.circle, dataset: "overturemaps.org", text: "   ", collection: "place")
         #expect(blank.places.count > 0)
         #expect(blank == none)
         #expect(blank.places.allSatisfy { $0.score == nil })
@@ -197,7 +197,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
 @Suite("ordering among places containing the center") struct OrderingAmongContaining {
     private func ids(_ values: [(JSONObject, Int64?)], region: Region, text: String? = nil, sort: SortMode) async throws -> [String] {
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: values.map { record($0.0, importance: $0.1) })])])
-        return try await server.client().searchPlaces(region: region, text: text, sort: sort).places
+        return try await server.client().searchPlaces(region: region, dataset: "overturemaps.org", text: text, collection: "place", sort: sort).places
             .map { String(($0.origin ?? "").dropFirst(placeOrigin("").count)) }
     }
 
@@ -206,7 +206,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         // Center is exactly (45, 180). The small box reaches it as lon -180 / 180.
         let small = place("small", "Small", [bboxLocation(north: 50, south: 40, east: -170, west: -180)])
         let large = place("large", "Large", [bboxLocation(north: 55, south: 35, east: -160, west: 160)])
-        #expect(try await ids([(small, 1), (large, 9)], region: .bbox(minLon: 170, minLat: 40, maxLon: -170, maxLat: 50), sort: .distance)
+        #expect(try await ids([(small, 1), (large, 9)], region: .bbox(west: 170, south: 40, east: -170, north: 50), sort: .distance)
                 == ["small", "large"])
     }
 
@@ -288,7 +288,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
     @Test("defaults to overturemaps.org / place when nothing is named")
     func defaults() async throws {
         let fake = try setup()
-        _ = try await fake.client().searchPlaces(region: sfRegion)
+        _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let first = try #require(fake.requests.first)
         #expect(param(first, "dataset") == "overturemaps.org")
         #expect(param(first, "collection") == "place")
@@ -297,7 +297,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
     @Test("takes overturemaps.org for a collection named alone")
     func collectionAlone() async throws {
         let fake = try setup()
-        _ = try? await fake.client().searchPlaces(region: sfRegion, collection: "division")
+        _ = try? await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "division")
         let first = try #require(fake.requests.first)
         #expect(param(first, "dataset") == "overturemaps.org")
         #expect(param(first, "collection") == "division")

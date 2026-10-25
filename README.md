@@ -71,7 +71,7 @@ Regions:
 
 ```swift
 .circle(lat: 39.9526, lon: -75.1652, radius: 1000)              // radius in meters
-.bbox(minLon: -75.18, minLat: 39.94, maxLon: -75.14, maxLat: 39.96)  // degrees
+.bbox(west: -75.18, south: 39.94, east: -75.14, north: 39.96)  // degrees
 ```
 
 Datasets and collections work like this:
@@ -83,7 +83,7 @@ Datasets and collections work like this:
 
 A collection-filtered search, including the default `overturemaps.org` / `place`, keeps only records whose `origin` starts with `urn:atgeo:{dataset}:{collection}:`. A record with no `origin` matches no collection filter, so such a search never returns one. A dataset-only search has no filter and returns those records too.
 
-A bbox with `minLon > maxLon` crosses the antimeridian. A place with a point location is kept if the point falls inside the region; a place with only a bounding box is kept if that box touches the region.
+A bbox with `west > east` crosses the antimeridian. A place with a point location is kept if the point falls inside the region; a place with only a bounding box is kept if that box touches the region.
 
 The result:
 
@@ -146,7 +146,7 @@ Every field of the describe types is optional, and a field the server drops or r
 ### Errors
 
 - `AtgeoError` has a `code`, a `message` and the HTTP `status`, which tells a request the server refused (4xx) from one it failed to answer (5xx) without matching on codes. Its `localizedDescription` is the message followed by the code in parentheses, and `AtgeoArgumentError`'s says what was wrong with the arguments. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
-- `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `minLat > maxLat`, negative radius) and for `.similarity` without text, before any request.
+- `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `south > north`, negative radius) and for `.similarity` without text, before any request.
 - A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `record`), throws `DecodingError`.
 - A failed `getTiles` request fails the whole search. A failed tile does not: that tile is skipped, not retried, and listed in `tileFailures`, which `tiles.failed` counts, and `complete` is `false`. A tile URL that isn't an absolute `http` or `https` URL, or that carries a username or password, is a failed tile too, and never reaches the transport, yours included.
 - A `TileFailure` has the tile's `url` as the server gave it, a `kind` saying where it failed, the HTTP `status` for `.status`, and the `error` itself. The kinds: `.refused` (the URL check above; no request, and the error is `URLError(.unsupportedURL)`), `.status` (a non-2xx answer; the error is its `AtgeoError`), `.decode` (a 2xx whose body isn't a tile payload) and `.transport` (whatever the transport threw: a network error, a timeout, a body over the cap, or anything your own transport throws, an `AtgeoError` included). `url`, `kind` and `status` are what every atgeo SDK reports; `error` is Swift's own, so `==` and `Codable` leave it out. The client always sets it; it's `nil` only in a failure decoded from JSON or one you built with `nil` yourself. Decoding a `kind` this version doesn't know throws. A cancelled search throws rather than listing its tiles as failed.

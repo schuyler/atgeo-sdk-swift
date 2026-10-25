@@ -236,7 +236,7 @@ private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
 
 // MARK: - The same cases end to end, through the client and the fake server's raw-body seam
 
-private let sf = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sf = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 private let getTilesPath = "https://places.atgeo.org/xrpc/org.atgeo.getTiles"
 private let getPlacePath = "https://places.atgeo.org/xrpc/org.atgeo.getPlace"
 private let geoAt = #"{"$type":"community.lexicon.location.geo","latitude":"37.775","longitude":"-122.415"}"#
@@ -253,8 +253,8 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     func noTileList(body: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, body)])
         let client = server.client()
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf) })
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf) })
+        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
+        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
         #expect(server.getTilesRequests.count == 2)
     }
 
@@ -263,7 +263,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
         let server = try FakeServer(
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             rawBodies: [getTilesPath: raw(200, #"{"tiles":[5,null,"\#(tile)",{"u":1}]}"#)])
-        let result = try await server.client().searchPlaces(region: sf)
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.count == 1)
     }
@@ -271,7 +271,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func nullLocationsAndVariantsAreSkipped() async throws {
         let value = place("a", "Munich", [.null, point(37.775, -122.415)], ["variants": .array([.null, .object(["name": .string("München")])])])
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: [record(value)])])])
-        let result = try await server.client().searchPlaces(region: sf, text: "munchen")
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", text: "munchen", collection: "place")
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
     }
 
@@ -325,7 +325,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     ])
     func errorBody(body: String, code: String, message: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(400, body)])
-        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf) }
+        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
     }
 
     @Test("a getPlace body with no record object is a decoding error", arguments: ["null", "{}", #"{"uri":"u","record":null}"#, #"{"uri":"u","record":"x"}"#])
@@ -350,13 +350,13 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func aTileThatIsNotJSONCountsAsFailed() async throws {
         let tile = tileURL("a")
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#), tile: raw(200, "<html>")])
-        let result = try await server.client().searchPlaces(region: sf)
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 0, failed: 1))
     }
 
     @Test func aGetTilesBodyThatIsNotJSONIsADecodingError() async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, "<html>")])
-        #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf) })
+        #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
     }
 }
 
