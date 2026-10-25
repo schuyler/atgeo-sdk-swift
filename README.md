@@ -13,6 +13,7 @@ let atgeo = AtgeoClient()
 
 let result = try await atgeo.searchPlaces(
     region: .circle(lat: 39.9526, lon: -75.1652, radius: 1000),  // meters
+    dataset: "overturemaps.org",
     text: "Starbux"
 )
 
@@ -21,7 +22,7 @@ for hit in result.places {
 }
 ```
 
-Misspellings are fine; matching is fuzzy, and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
+Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy, and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
 
 ## Installation
 
@@ -57,13 +58,13 @@ Point `server` at your own garganorn to run against your own data; see [Server r
 
 Every method is `async throws`. Cancel the calling `Task` to abort one.
 
-### `searchPlaces(region:text:dataset:collection:sort:) -> SearchResult`
+### `searchPlaces(region:dataset:text:collection:sort:) -> SearchResult`
 
 | Parameter | Meaning |
 |---|---|
 | `region` | Required. A circle or bounding box (below). |
 | `text` | Optional search text. Matched fuzzily against each place's `name` and its `variants[].name`, after lowercasing and stripping accents and extra whitespace. Each name is scored against the whole query and against the query's first 12 words one at a time; words past the 12th count only in the whole-query comparison. |
-| `dataset` | Optional. The dataset to search, such as `openstreetmap.org`. Defaults to `overturemaps.org`. |
+| `dataset` | Required, with no default. The dataset to search, such as `overturemaps.org` or `openstreetmap.org`. It's a plain `String`, so leaving it out doesn't compile; an empty string is sent as given and the server answers for itself. |
 | `collection` | Optional. Restricts the search to one collection of the dataset, such as `way`. See below for the defaults. |
 | `sort` | `.fused` (default), `.distance`, or `.similarity`. |
 
@@ -76,12 +77,10 @@ Regions:
 
 Datasets and collections work like this:
 
-- With neither, you search `overturemaps.org` / `place`.
-- With only `collection`, you search that collection of `overturemaps.org`.
-- With only `dataset`, you search the whole dataset, every collection together. `dataset: "openstreetmap.org"` returns nodes, ways and relations in one list. Add `collection: "way"` to get only ways.
-- With both, you search that collection.
+- With only a `dataset`, you search the whole dataset, every collection together. `dataset: "openstreetmap.org"` returns nodes, ways and relations in one list, ranked together by importance (importance is comparable across the tilesets one producer builds from one dataset). Add `collection: "way"` to get only ways.
+- With a `collection` too, you search that collection.
 
-A collection-filtered search, including the default `overturemaps.org` / `place`, keeps only records whose `origin` starts with `urn:atgeo:{dataset}:{collection}:`. A record with no `origin` matches no collection filter, so such a search never returns one. A dataset-only search has no filter and returns those records too.
+A collection-filtered search keeps only records whose `origin` starts with `urn:atgeo:{dataset}:{collection}:`. A record with no `origin` matches no collection filter, so such a search never returns one. A dataset-only search has no filter and returns those records too.
 
 A bbox with `west > east` crosses the antimeridian. A place with a point location is kept if the point falls inside the region; a place with only a bounding box is kept if that box touches the region.
 
@@ -94,6 +93,7 @@ public struct SearchResult {
     public var overview: Bool        // true if the server answered with its coarse overview; see below
     public var tiles: TileCounts     // .fetched and .failed
     public var tileFailures: [TileFailure]  // each failed tile, in tile URL order; see Errors
+    public var attribution: [Attribution]  // who to credit; see Attribution, below
 }
 
 public struct SearchHit {
@@ -102,6 +102,7 @@ public struct SearchHit {
     public var importance: Int64?    // an integer relative to its tileset; nil if it has none
     public var distance: Double      // meters from the region's center to the nearest point of the place; 0 if the place contains the center
     public var score: Double?        // 0 to 1 text similarity; nil if no text was given
+    public var collection: CollectionKey?  // the collection this place belongs to (dataset and collection); nil if the tile doesn't say
 }
 ```
 
@@ -110,6 +111,21 @@ public struct SearchHit {
 Every result type has a public initializer, so you can build a `SearchResult` or a `PlaceRecord` for your own tests and SwiftUI previews without a server. They're `Codable` too, so a saved place can be a `PlaceRecord` written with `JSONEncoder`. One catch: a number too large for a double, which no garganorn sends, is read as infinity (as JavaScript reads it), and `JSONEncoder` refuses to write infinity unless you set its `nonConformingFloatEncodingStrategy`.
 
 When `text` is given, places scoring below 0.6 are dropped.
+
+#### Attribution
+
+```swift
+public struct Attribution {              // org.atgeo.defs#collectionAttribution
+    public var dataset: String
+    public var collection: String
+    public var release: String?, source: String?, licenses: [String]?, attribution: String?
+}
+public struct CollectionKey { public var dataset: String; public var collection: String }
+```
+
+`result.attribution` is the credit for every collection whose data the search's tiles hold, references included: a hit's `within` relations carry a containing division's name, so an app that shows that name shows that collection's data too. It has one entry per (dataset, collection), sorted by dataset and then collection (by UTF-16 code units, like the reference), and it's always a list, empty when no tile was used or none carried any. It covers every tile the search used, whether or not a record in it survived the filtering; a tile that failed contributes nothing. When two tiles give different entries for one collection, the lowest tile URL wins.
+
+`hit.collection` is the entry of the hit's own tile whose `urn:atgeo:{dataset}:{collection}:` starts the hit's `place.origin` (the first, if several do). It's `nil` for a hit with no `origin`, even one keyed by a `uri`, and when the tile doesn't list a matching collection.
 
 Sort modes:
 
@@ -131,7 +147,11 @@ A place can be stored in several tiles. The client keeps one hit per origin (or 
 
 ### `place(origin:) -> PlaceRecord`
 
-Returns a `PlaceRecord` with `origin`, `place` and `importance`, as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made; otherwise the client asks the server (`org.atgeo.getPlace`) directly. The other SDKs call this `getPlace`; here it follows Swift's naming guidelines.
+Returns a `PlaceRecord` with `origin`, `place`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none. The other SDKs call this `getPlace`; here it follows Swift's naming guidelines.
+
+#### Changing what you're handed
+
+The `place` of a hit, and the answers to `place(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `SearchHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
 
 ### `describeService() -> ServiceDescription`
 
@@ -139,7 +159,11 @@ Returns the server's `did` and its `tilesets`, each a `slug` and its `collection
 
 ### `describeTileset(_ slug:) -> Tileset`
 
-Returns the tileset's descriptor: `slug`, `collections` (each with `dataset`, `collection` and optional `release`, `source`, `licenses`, `attribution`, `recordCount`, `locationFormats`, `containmentTypes`, `categories` and `attributes`), and optional `publishedAt`, `extent` and `references`. Not cached.
+Returns the tileset's descriptor: `slug`, `collections` (each with `dataset`, `collection` and optional `release`, `source`, `licenses`, `attribution`, `recordCount`, `locationFormats`, `containmentTypes`, `categories` and `attributes`), and optional `publishedAt`, `extent`, `references` and `overview`. `overview` is `Tileset.Overview(records:)`, the number of records in the tileset's overview band, and is `nil` when the tileset has none. Not cached.
+
+### `describeService() -> ServiceDescription`
+
+Returns the server's `did`, its `tilesets` (each with a `slug` and its `collections`, as `dataset` and `collection`) and `maxTiles`, the server's tile budget. `maxTiles` is for information only: tile zooms are adaptive, so you can't tell from it whether a box fits. Cached for an hour.
 
 Every field of the describe types is optional, and a field the server drops or retypes comes back `nil` rather than failing the call. Like the result types, they're `Codable` and have public initializers.
 
@@ -147,7 +171,7 @@ Every field of the describe types is optional, and a field the server drops or r
 
 - `AtgeoError` has a `code`, a `message` and the HTTP `status`, which tells a request the server refused (4xx) from one it failed to answer (5xx) without matching on codes. Its `localizedDescription` is the message followed by the code in parentheses, and `AtgeoArgumentError`'s says what was wrong with the arguments. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
 - `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `south > north`, negative radius) and for `.similarity` without text, before any request.
-- A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `record`), throws `DecodingError`.
+- A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `value` object for `place(origin:)`; the older `{uri, record}` shape counts as having none), throws `DecodingError`.
 - A failed `getTiles` request fails the whole search. A failed tile does not: that tile is skipped, not retried, and listed in `tileFailures`, which `tiles.failed` counts, and `complete` is `false`. A tile URL that isn't an absolute `http` or `https` URL, or that carries a username or password, is a failed tile too, and never reaches the transport, yours included.
 - A `TileFailure` has the tile's `url` as the server gave it, a `kind` saying where it failed, the HTTP `status` for `.status`, and the `error` itself. The kinds: `.refused` (the URL check above; no request, and the error is `URLError(.unsupportedURL)`), `.status` (a non-2xx answer; the error is its `AtgeoError`), `.decode` (a 2xx whose body isn't a tile payload) and `.transport` (whatever the transport threw: a network error, a timeout, a body over the cap, or anything your own transport throws, an `AtgeoError` included). `url`, `kind` and `status` are what every atgeo SDK reports; `error` is Swift's own, so `==` and `Codable` leave it out. The client always sets it; it's `nil` only in a failure decoded from JSON or one you built with `nil` yourself. Decoding a `kind` this version doesn't know throws. A cancelled search throws rather than listing its tiles as failed.
 - On Apple platforms each failed tile of a search that returns is also logged at debug level, subsystem `org.atgeo`, category `tiles`, with its kind and status public and its URL and error private: a tile URL says roughly where you searched. Nothing goes anywhere but your device's log, and nothing at all on Linux.
@@ -157,7 +181,7 @@ Every field of the describe types is optional, and a field the server drops or r
 
 Your search text never leaves the device. Neither does your precise location.
 
-To search, the client asks the server which tiles cover an area, downloads those tiles, and does the matching, filtering, and ranking locally. The only location a search sends is a bounding box (two across the antimeridian), snapped outward to a 0.01 degree grid (roughly 1 km of latitude) before it goes out; alongside it go the search's dataset and, if it has one, its collection (including the default `place`). Your exact region is used only on the device, to filter and to compute distances.
+To search, the client asks the server which tiles cover an area, downloads those tiles, and does the matching, filtering, and ranking locally. The only location a search sends is a bounding box (two across the antimeridian), snapped outward to a 0.01 degree grid (roughly 1 km of latitude) before it goes out; alongside it go the search's dataset and, if it has one, its collection. Your exact region is used only on the device, to filter and to compute distances.
 
 What does go on the wire:
 
@@ -210,6 +234,8 @@ There's also an end-to-end run against a live server, which isn't part of `swift
 ```sh
 ATGEO_SERVER=http://localhost:8000 swift run -c release atgeo-e2e
 ```
+
+It also checks `maxTiles`, the search's attribution, hit collections and `place(origin:)`'s attribution, so it fails against a server that predates [schuyler/garganorn#27](https://github.com/schuyler/garganorn/issues/27). Until that's deployed, it can't pass; that is expected, and the checks stay.
 
 It takes the same environment variables as the reference's `scripts/e2e.ts`: `ATGEO_SERVER` (default `http://localhost:8000`), `ATGEO_DATASET` (default `openstreetmap.org`), `ATGEO_COLLECTION` (default none), and `ATGEO_REGION` as `lat,lon,radius` in meters (default `43.0,-71.45,3000`, Manchester, NH). It prints a line per step, exits non-zero on the first failure, and finishes by timing the parser on the largest tile it fetched.
 
