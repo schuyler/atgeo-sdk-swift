@@ -29,6 +29,18 @@ func inCollection(_ r: TileRecord, dataset: String, collection: String) -> Bool 
     return origin.utf16.starts(with: "urn:atgeo:\(dataset):\(collection):".utf16)
 }
 
+/// The collection a hit belongs to (contract §8): the first entry, in served order, of the tile's attribution whose
+/// `urn:atgeo:{dataset}:{collection}:` prefixes `value.origin`, by code units. Only `value.origin` counts, never
+/// the `uri` fallback, and the origin is never split. A fresh key holding just the two names; nil when none matches.
+func hitCollection(_ r: TileRecord, attribution: [Attribution]) -> CollectionKey? {
+    guard let origin = r.value["origin"]?.stringValue else { return nil }
+    let units = origin.utf16
+    for entry in attribution where units.starts(with: "urn:atgeo:\(entry.dataset):\(entry.collection):".utf16) {
+        return CollectionKey(dataset: entry.dataset, collection: entry.collection)
+    }
+    return nil
+}
+
 /// Contract §4.6 to §4.9 over the concatenated records of the used tiles, in URL order. `query` is
 /// already normalized; "" means no text. `collection` is the resolved collection, nil for a whole dataset.
 func assemble(

@@ -59,7 +59,7 @@ func rank(_ records: [PreparedRecord], region: Region, query: String, sort: Sort
         guard let distance = distanceTo(locations, lat: middle.lat, lon: middle.lon) else { continue }
         let hit = SearchHit(
             origin: recordKey(record), place: record.value, importance: record.importance,
-            distance: distance, score: score)
+            distance: distance, score: score, collection: hitCollection(record, attribution: prepared.attribution))
         ranked.append(Ranked(hit: hit, specificity: specificity(locations), index: ranked.count))
     }
 

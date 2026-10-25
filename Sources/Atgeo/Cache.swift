@@ -6,9 +6,15 @@ import Foundation
 struct PreparedRecord: Sendable, Equatable {
     var record: TileRecord
     var names: [[UInt16]]
+    /// The attribution of the tile the record came from, shared copy-on-write with the tile's other records
+    /// (contract §8); empty for a record built outside a tile.
+    var attribution: [Attribution]
 
-    init(_ record: TileRecord) {
+    init(_ record: TileRecord) { self.init(record, attribution: []) }
+
+    init(_ record: TileRecord, attribution: [Attribution]) {
         self.record = record
+        self.attribution = attribution
         names = normalizedNames(record.value)
     }
 }
@@ -20,8 +26,19 @@ struct PreparedRecord: Sendable, Equatable {
 /// Linux, they made the cache 1.75 times its bodies' size rather than 1.1. A hash is only a candidate, which
 /// `TileCache.lookup(key:)`'s caller confirms by parsing the tile.
 func parseTile(_ body: Data) throws -> (records: [PreparedRecord], keys: Set<Int>) {
-    let records = try tileRecords(decodeJSON(body))
-    return (records.map(PreparedRecord.init), Set(records.compactMap { recordKey($0).map { OrdinalKey($0).hashValue } }))
+    let parsed = try parseTileWithAttribution(body)
+    return (parsed.records, parsed.keys)
+}
+
+/// `parseTile` and the tile's attribution (contract §1, §10): empty when the payload has none, or not a list.
+/// A tile with no records still has it.
+func parseTileWithAttribution(_ body: Data) throws -> (records: [PreparedRecord], keys: Set<Int>, attribution: [Attribution]) {
+    let payload = try tilePayload(decodeJSON(body))
+    let attribution = payload.attribution ?? []
+    return (
+        payload.records.map { PreparedRecord($0, attribution: attribution) },
+        Set(payload.records.compactMap { recordKey($0).map { OrdinalKey($0).hashValue } }),
+        attribution)
 }
 
 /// The first of `records` whose key (contract §4.6) is `key`, by UTF-16 code units.
@@ -44,9 +61,11 @@ func parseCachedTile(_ body: Data) async throws -> [PreparedRecord] {
 /// while the cache still holds the entry it was parsed from, so what the cache holds, its recency order, and
 /// so what a search fetches, are exactly as they would be without the memo.
 struct TileCache {
-    /// A cached tile: its body, and its records when they are memoized.
+    /// A cached tile: its body, its attribution, and its records when they are memoized.
     struct Tile {
         var body: Data
+        /// The tile's `attribution` as read when it was fetched (contract §10); empty when it had none.
+        var attribution: [Attribution]
         var records: [PreparedRecord]?
         /// Identifies the entry, so records parsed from it can be memoized only while it is still cached.
         var generation: Int
@@ -59,6 +78,7 @@ struct TileCache {
 
     private struct Entry {
         var body: Data
+        var attribution: [Attribution]
         var keys: Set<Int>
         var size: Int
         var generation: Int
@@ -96,11 +116,11 @@ struct TileCache {
     /// larger than the budget evicts every other tile and then itself. Replacing a URL subtracts its old size.
     /// Returns the new entry's generation.
     @discardableResult
-    mutating func insert(_ url: String, body: Data, keys: Set<Int>, size: Int) -> Int {
+    mutating func insert(_ url: String, body: Data, keys: Set<Int>, size: Int, attribution: [Attribution] = []) -> Int {
         let key = OrdinalKey(url)
         if let old = entries[key] { total -= old.size }
         generations += 1
-        entries[key] = Entry(body: body, keys: keys, size: size, generation: generations)
+        entries[key] = Entry(body: body, attribution: attribution, keys: keys, size: size, generation: generations)
         memo[key] = nil
         touch(key)
         total += size
@@ -134,7 +154,7 @@ struct TileCache {
 
     private func tile(_ key: OrdinalKey, _ entry: Entry) -> Tile {
         let memoized = memo[key].flatMap { $0.generation == entry.generation ? $0.records : nil }
-        return Tile(body: entry.body, records: memoized, generation: entry.generation)
+        return Tile(body: entry.body, attribution: entry.attribution, records: memoized, generation: entry.generation)
     }
 
     private mutating func touch(_ key: OrdinalKey) {

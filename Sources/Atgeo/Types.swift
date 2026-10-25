@@ -121,6 +121,17 @@ public struct PlaceRecord: Sendable, Equatable, Codable {
         self.importance = importance
         self.attribution = attribution
     }
+
+    private enum CodingKeys: String, CodingKey { case origin, place, importance, attribution }
+
+    /// Written by hand so that a record encoded before `attribution` existed still decodes, with none.
+    public init(from decoder: any Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        origin = try c.decode(String.self, forKey: .origin)
+        place = try c.decode(JSONObject.self, forKey: .place)
+        importance = try c.decodeIfPresent(Int64.self, forKey: .importance)
+        attribution = try c.decodeIfPresent([Attribution].self, forKey: .attribution) ?? []
+    }
 }
 
 /// The dataset and collection a hit belongs to (contract §8).
@@ -256,7 +267,7 @@ public struct Tileset: Sendable, Equatable, Codable {
 }
 
 /// A usable record from a tile payload (contract §4.4): `value` is an object; `uri` and `importance` are
-/// absent unless they are a string and an in-range number (contract §1, §16).
+/// absent unless they are a string and an in-range number (contract §1).
 struct TileRecord: Sendable, Equatable {
     var value: JSONObject
     var uri: String?
@@ -314,7 +325,21 @@ func tileRecords(_ payload: JSONValue) throws -> [TileRecord] {
 
 /// A tile payload: `tileRecords` and the attribution (contract §1).
 func tilePayload(_ payload: JSONValue) throws -> TilePayload {
-    TilePayload(records: try tileRecords(payload), attribution: nil)
+    TilePayload(records: try tileRecords(payload), attribution: payload["attribution"]?.arrayValue.map(attributionEntries))
+}
+
+/// The entries of an `attribution` list: an element is kept only if it is an object whose `dataset` and `collection`
+/// are both strings. `release`, `source` and `attribution` are strings or absent, `licenses` the string elements of an
+/// array or absent; each field is read on its own, other fields are ignored, and served order and duplicates stay
+/// (contract §1).
+func attributionEntries(_ list: [JSONValue]) -> [Attribution] {
+    list.compactMap { v in
+        guard let dataset = v["dataset"]?.stringValue, let collection = v["collection"]?.stringValue else { return nil }
+        return Attribution(
+            dataset: dataset, collection: collection,
+            release: v["release"]?.stringValue, source: v["source"]?.stringValue,
+            licenses: strings(v["licenses"]), attribution: v["attribution"]?.stringValue)
+    }
 }
 
 /// A getTiles body: the string entries of `tiles`, and `overview` by JavaScript truthiness. No `tiles`
@@ -326,8 +351,10 @@ func tileList(_ body: JSONValue) throws -> (tiles: [String], overview: Bool) {
 
 /// A getPlace body. The caller's `origin` is returned, not the response's `uri` (contract §9).
 func placeRecord(_ body: JSONValue, origin: String) throws -> PlaceRecord {
-    guard let record = body["record"]?.objectValue else { throw noUsableBody("getPlace response has no record object") }
-    return PlaceRecord(origin: origin, place: record, importance: int64(body["importance"]))
+    guard let value = body["value"]?.objectValue else { throw noUsableBody("getPlace response has no value object") }
+    return PlaceRecord(
+        origin: origin, place: value, importance: int64(body["importance"]),
+        attribution: body["attribution"]?.arrayValue.map(attributionEntries) ?? [])
 }
 
 private func collectionRef(_ v: JSONValue) -> CollectionRef {
@@ -341,7 +368,7 @@ func serviceDescription(_ body: JSONValue) throws -> ServiceDescription {
             slug: t["slug"]?.stringValue,
             collections: objects(t["collections"], collectionRef) ?? [])
     }
-    return ServiceDescription(did: body["did"]?.stringValue, tilesets: tilesets ?? [])
+    return ServiceDescription(did: body["did"]?.stringValue, tilesets: tilesets ?? [], maxTiles: int64(body["maxTiles"]))
 }
 
 private func collectionAttribution(_ v: JSONValue) -> CollectionAttribution {
@@ -377,7 +404,10 @@ func tileset(_ body: JSONValue) throws -> Tileset {
         publishedAt: body["publishedAt"]?.stringValue,
         extent: extent,
         collections: objects(body["collections"], collectionInfo) ?? [],
-        references: objects(body["references"], collectionAttribution))
+        references: objects(body["references"], collectionAttribution),
+        overview: body["overview"].flatMap { o in
+            o.objectValue == nil ? nil : Tileset.Overview(records: int64(o["records"]))
+        })
 }
 
 /// The `AtgeoError` for a non-2xx response: `error` and `message` are each used when the body is a JSON
