@@ -5,8 +5,8 @@ import Foundation
 public enum Region: Sendable, Hashable {
     /// Radius in metres.
     case circle(lat: Double, lon: Double, radius: Double)
-    /// Degrees. minLon > maxLon crosses the antimeridian.
-    case bbox(minLon: Double, minLat: Double, maxLon: Double, maxLat: Double)
+    /// Degrees. `west > east` crosses the antimeridian.
+    case bbox(west: Double, south: Double, east: Double, north: Double)
 }
 
 let degToM = 111194.927

@@ -8,7 +8,7 @@ private func idOf(_ origin: String?) -> String { String(String(describing: origi
 
 private func search(_ records: [JSONObject], _ region: Region) async throws -> [String] {
     let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("t"), records: records.map { record($0) })])])
-    return try await server.client().searchPlaces(region: region).places.map { idOf($0.origin) }.sorted()
+    return try await server.client().searchPlaces(region: region, dataset: "overturemaps.org", collection: "place").places.map { idOf($0.origin) }.sorted()
 }
 
 private func divisions(_ tiles: [FakeTile]) -> FakeTileset {
@@ -19,7 +19,7 @@ private func division(_ id: String, _ name: String, lat: Double = 37.775) -> JSO
     place(id, name, [point(lat, -122.415)], ["origin": .string("urn:atgeo:overturemaps.org:division:\(id)")])
 }
 
-private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 
 @Suite("deduplication") struct Deduplication {
     let first = place("dup", "First copy", [point(37.775, -122.415)])
@@ -31,7 +31,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
             FakeTile(url: tileURL("a"), records: [record(first), record(place("a-only", "A", [point(37.772, -122.412)]))]),
             FakeTile(url: tileURL("b"), records: [record(second), record(place("b-only", "B", [point(37.773, -122.413)]))]),
         ])])
-        let result = try await server.client().searchPlaces(region: sfRegion)
+        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.places.map { idOf($0.origin) }.sorted() == ["a-only", "b-only", "dup"])
     }
 
@@ -40,7 +40,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         let server = try FakeServer(tilesets: [overture([
             FakeTile(url: tileURL("a"), records: [record(first)]), FakeTile(url: tileURL("b"), records: [record(second)]),
         ])])
-        #expect(try await server.client().searchPlaces(region: sfRegion).places.map { $0.place["name"] } == [.string("First copy")])
+        #expect(try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place").places.map { $0.place["name"] } == [.string("First copy")])
     }
 
     @Test("merges a division record held by two tiles into one hit")
@@ -65,7 +65,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
                 FakeTile(url: tileURL(westName), records: [record(place("x", "West copy", [point(15, -175)]))]),
             ])],
             tilesFor: { bbox in .tiles([bbox.hasPrefix("170") ? tileURL(eastName) : tileURL(westName)]) })
-        let result = try await server.client().searchPlaces(region: .bbox(minLon: 170, minLat: 10, maxLon: -170, maxLat: 20))
+        let result = try await server.client().searchPlaces(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place")
         #expect(result.places.map { $0.place["name"] } == [.string(winner)], "east tile URL sorts \(order)")
     }
 
@@ -103,7 +103,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
 }
 
 @Suite("region filtering: bbox") struct RegionFilteringBbox {
-    let region = Region.bbox(minLon: -122.4194, minLat: 37.7749, maxLon: -122.415, maxLat: 37.7799)
+    let region = Region.bbox(west: -122.4194, south: 37.7749, east: -122.415, north: 37.7799)
 
     @Test("drops a point inside the snapped box but outside the region")
     func dropsOutside() async throws {
@@ -164,7 +164,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
             place("prime", "P", [point(0, 0)]),
             place("crossing-box", "X", [bboxLocation(north: 1, south: -1, east: -175, west: 178)]),
             place("far-box", "F", [bboxLocation(north: 1, south: -1, east: 100, west: 90)]),
-        ], .bbox(minLon: 170, minLat: -10, maxLon: -170, maxLat: 10))
+        ], .bbox(west: 170, south: -10, east: -170, north: 10))
         #expect(kept == ["crossing-box", "east-side", "west-side"])
     }
 }
@@ -198,7 +198,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         let box = place("clipping", "Clipping", [bboxLocation(north: 89, south: 80, east: 50, west: 40)])
         #expect(haversine(lat, 0, lat, 40) > radius)
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("t"), records: [record(box)])])])
-        let places = try await server.client().searchPlaces(region: .circle(lat: lat, lon: 0, radius: radius)).places
+        let places = try await server.client().searchPlaces(region: .circle(lat: lat, lon: 0, radius: radius), dataset: "overturemaps.org", collection: "place").places
         #expect(places.map { idOf($0.origin) } == ["clipping"])
         #expect((places.first?.distance ?? .infinity) <= radius)
     }
@@ -251,7 +251,7 @@ private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.
         let server = try FakeServer(tilesets: [overture(tiles)])
         let ordered = OrderedTransport(server, order: arrival.map(tileURL))
         let client = AtgeoClient(server: URL(string: server.server)!, transport: ordered, cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() })
-        let result = try await client.searchPlaces(region: sfRegion, text: text)
+        let result = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", text: text, collection: "place")
         return (result, await ordered.completed)
     }
 

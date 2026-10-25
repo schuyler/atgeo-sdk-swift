@@ -92,7 +92,7 @@ private func decode(_ text: String) throws -> JSONValue {
     }
 
     @Test("vendored files decode", arguments: [
-        "normalize.json", "jaro-winkler.json", "ranking-scenarios.json",
+        "normalize.json", "jaro-winkler.json", "ranking-scenarios.json", "lenient-readers.json", "attribution-scenarios.json",
         "lexicon/address.json", "lexicon/bbox.json", "lexicon/defs.json", "lexicon/describeService.json",
         "lexicon/describeTileset.json", "lexicon/geo.json", "lexicon/getPlace.json", "lexicon/getTiles.json",
         "lexicon/place.json", "lexicon/tilePayload.json",
@@ -104,7 +104,7 @@ private func decode(_ text: String) throws -> JSONValue {
 
     @Test func sourceNamesBothCommits() throws {
         let source = String(decoding: try fixtureData("SOURCE"), as: UTF8.self)
-        #expect(source.contains("atgeo-sdk-js a14961f044d7be074af4e5091b12d573dd4c4adb"))
-        #expect(source.contains("garganorn e06c11090f76e627455b347aa3d4dee2e90c6ffc"))
+        #expect(source.contains("atgeo-sdk-js 2710a14ba7d9485ddb6c00975f396e95389ac419"))
+        #expect(source.contains("garganorn 2009984de02e9b3cbdf0f645213c99ec90ea3406"))
     }
 }

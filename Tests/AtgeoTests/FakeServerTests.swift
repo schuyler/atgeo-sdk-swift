@@ -74,11 +74,31 @@ private func object(_ data: Data) throws -> JSONValue { try decodeJSON(data) }
         #expect(body["records"] == .array([.object(["value": .object(ok), "importance": .number(3)])]))
     }
 
+    @Test("answers getPlace with exactly uri, url, importance, value and attribution")
+    func getPlaceShape() async throws {
+        let origin = try #require(ok["origin"]?.stringValue)
+        let path = "/xrpc/org.atgeo.getPlace?uri=\(origin)"
+        let body = try object(try await get(try build([wire(record(ok, importance: 3))]), path).body)
+        #expect(body.objectValue?.keys.sorted() == ["attribution", "importance", "uri", "url", "value"])
+        #expect(body["uri"] == .string(origin))
+        let bare = try object(try await get(try build([wire(record(ok))]), path).body)
+        #expect(bare.objectValue?.keys.sorted() == ["attribution", "uri", "url", "value"])
+    }
+
+    @Test("emits a tileset's overview in its descriptor")
+    func overviewInDescriptor() async throws {
+        var tileset = overture([])
+        tileset.overview = ["records": .number(7)]
+        let body = try object(try await get(try FakeServer(tilesets: [tileset]), "/xrpc/org.atgeo.describeTileset?slug=overture-place").body)
+        #expect(body["overview"] == .object(["records": .number(7)]))
+    }
+
     @Test("answers describeService with a did and tilesets")
     func describeService() async throws {
         let body = try object(try await get(try build([]), "/xrpc/org.atgeo.describeService").body)
         #expect(body == .object([
             "did": .string("did:web:places.atgeo.org"),
+            "maxTiles": .number(50),
             "tilesets": .array([.object([
                 "slug": .string("overture-place"),
                 "collections": .array([.object(["dataset": .string("overturemaps.org"), "collection": .string("place")])]),

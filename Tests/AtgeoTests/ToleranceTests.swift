@@ -131,16 +131,21 @@ private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
 }
 
 @Suite("contract §16, bullet 5: getPlace and describe bodies") struct PlaceAndDescribeBodies {
-    @Test("getPlace with no record object", arguments: ["null", "{}", #"{"record":null}"#, #"{"record":"x"}"#, #"{"record":[]}"#, "[]", "1"])
-    func noRecord(body: String) throws {
+    @Test("getPlace with no value object", arguments: [
+        "null", "{}", #"{"value":null}"#, #"{"value":"x"}"#, #"{"value":[]}"#, "[]", "1",
+        // The earlier shape has no usable body (contract §1).
+        #"{"uri":"x","record":{"name":"N"}}"#,
+    ])
+    func noValue(body: String) throws {
         let v = try json(body)
         #expect(isDecodingError { _ = try placeRecord(v, origin: "o") })
     }
 
     @Test func getPlaceReturnsTheCallersOrigin() throws {
-        let r = try placeRecord(try json(#"{"uri":"other","record":{"name":"N"},"importance":7}"#), origin: "mine")
-        #expect(r == PlaceRecord(origin: "mine", place: ["name": .string("N")], importance: 7))
-        #expect(try placeRecord(try json(#"{"record":{},"importance":"7"}"#), origin: "o").importance == nil)
+        let r = try placeRecord(try json(#"{"uri":"other","url":"https://x.example/p","value":{"name":"N"},"importance":7,"attribution":[]}"#), origin: "mine")
+        #expect(r == PlaceRecord(origin: "mine", place: ["name": .string("N")], importance: 7, attribution: []))
+        #expect(try placeRecord(try json(#"{"value":{},"importance":"7"}"#), origin: "o").importance == nil)
+        #expect(try placeRecord(try json(#"{"value":{}}"#), origin: "o").attribution == [])
     }
 
     @Test("describe bodies that are not objects", arguments: ["null", "false", "0", #""""#, "[]", "true", "1"])
@@ -236,7 +241,7 @@ private let here = Region.circle(lat: 0, lon: 0, radius: 1000)
 
 // MARK: - The same cases end to end, through the client and the fake server's raw-body seam
 
-private let sf = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sf = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 private let getTilesPath = "https://places.atgeo.org/xrpc/org.atgeo.getTiles"
 private let getPlacePath = "https://places.atgeo.org/xrpc/org.atgeo.getPlace"
 private let geoAt = #"{"$type":"community.lexicon.location.geo","latitude":"37.775","longitude":"-122.415"}"#
@@ -253,8 +258,8 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     func noTileList(body: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, body)])
         let client = server.client()
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf) })
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf) })
+        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
+        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
         #expect(server.getTilesRequests.count == 2)
     }
 
@@ -263,7 +268,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
         let server = try FakeServer(
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             rawBodies: [getTilesPath: raw(200, #"{"tiles":[5,null,"\#(tile)",{"u":1}]}"#)])
-        let result = try await server.client().searchPlaces(region: sf)
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.count == 1)
     }
@@ -271,7 +276,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func nullLocationsAndVariantsAreSkipped() async throws {
         let value = place("a", "Munich", [.null, point(37.775, -122.415)], ["variants": .array([.null, .object(["name": .string("München")])])])
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: [record(value)])])])
-        let result = try await server.client().searchPlaces(region: sf, text: "munchen")
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", text: "munchen", collection: "place")
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
     }
 
@@ -325,13 +330,29 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     ])
     func errorBody(body: String, code: String, message: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(400, body)])
-        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf) }
+        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
     }
 
-    @Test("a getPlace body with no record object is a decoding error", arguments: ["null", "{}", #"{"uri":"u","record":null}"#, #"{"uri":"u","record":"x"}"#])
-    func getPlaceWithoutRecord(body: String) async throws {
+    @Test("a getPlace body with no value object is a decoding error, the earlier shape included",
+          arguments: ["null", "{}", #"{"uri":"u","value":null}"#, #"{"uri":"u","value":"x"}"#, #"{"uri":"x","record":{"name":"X"}}"#])
+    func getPlaceWithoutValue(body: String) async throws {
         let server = try FakeServer(rawBodies: [getPlacePath: raw(200, body)])
         #expect(await throwsDecodingError { _ = try await server.client().place(origin: "urn:x:1") })
+    }
+
+    @Test func getPlaceReturnsTheValueAsServedWithAnUnreadableImportanceAbsent() async throws {
+        let server = try FakeServer(rawBodies: [getPlacePath: raw(200, #"{"uri":5,"value":{"name":"X","extra":{"n":[1]}},"importance":"high"}"#)])
+        let answer = try await server.client().place(origin: "urn:x:1")
+        #expect(answer == PlaceRecord(
+            origin: "urn:x:1", place: ["name": .string("X"), "extra": .object(["n": .array([.number(1)])])], importance: nil, attribution: []))
+    }
+
+    @Test func getPlaceSucceedsOnTheNewShapeAndReturnsItsAttributionAsServed() async throws {
+        let body = #"{"uri":"urn:x:1","url":"https://x.example/p","importance":3,"value":{"name":"X"},"attribution":[{"dataset":"d","collection":"c","licenses":["l"]},null,{"dataset":"d"}]}"#
+        let server = try FakeServer(rawBodies: [getPlacePath: raw(200, body)])
+        #expect(try await server.client().place(origin: "urn:x:1")
+                == PlaceRecord(origin: "urn:x:1", place: ["name": .string("X")], importance: 3,
+                               attribution: [Attribution(dataset: "d", collection: "c", licenses: ["l"])]))
     }
 
     @Test("a describe body that is not an object is a decoding error, and is not cached", arguments: ["null", "false", "0", #""""#, "[]"])
@@ -350,13 +371,13 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func aTileThatIsNotJSONCountsAsFailed() async throws {
         let tile = tileURL("a")
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#), tile: raw(200, "<html>")])
-        let result = try await server.client().searchPlaces(region: sf)
+        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 0, failed: 1))
     }
 
     @Test func aGetTilesBodyThatIsNotJSONIsADecodingError() async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, "<html>")])
-        #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf) })
+        #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
     }
 }
 
@@ -374,5 +395,48 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
             #expect(url == nil)
         }
         #endif
+    }
+}
+
+
+// MARK: - Tile attribution (contract §1, §4.4, §4.10), through the client
+
+@Suite("tile attribution is read leniently") struct TileAttribution {
+    private func search(_ tile: String) async throws -> SearchResult {
+        let url = tileURL("raw")
+        let good = #"{"value":\#(try goodValue()),"importance":4}"#
+        let server = try FakeServer(rawBodies: [
+            getTilesPath: raw(200, #"{"tiles":["\#(url)"]}"#),
+            url: raw(200, tile.replacingOccurrences(of: "GOOD", with: good)),
+        ])
+        return try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org")
+    }
+
+    private func goodValue() throws -> String {
+        String(decoding: try JSONEncoder().encode(JSONValue.object(place("good", "Good", [point(37.775, -122.415)]))), as: UTF8.self)
+    }
+
+    @Test("gives a search whose tiles lack attribution an empty attribution and nil hit collections")
+    func lacking() async throws {
+        let result = try await search(#"{"records":[GOOD]}"#)
+        #expect(result.attribution == [])
+        #expect(result.places.count == 1)
+        #expect(result.places.map(\.collection) == [nil])
+    }
+
+    @Test("does not fail the tile for an attribution that is not an array", arguments: [#""x""#, "{}", "null", "5"])
+    func notAnArray(attribution: String) async throws {
+        let result = try await search(#"{"records":[GOOD],"attribution":\#(attribution)}"#)
+        #expect(result.tiles == .init(fetched: 1, failed: 0))
+        #expect(result.attribution == [])
+        #expect(result.places.map(\.collection) == [nil])
+    }
+
+    @Test("drops entries that are not objects with a string dataset and collection, and keeps the rest")
+    func unusableEntries() async throws {
+        let result = try await search(#"{"records":[GOOD],"attribution":[null,5,{"dataset":"d"},{"dataset":"overturemaps.org","collection":"place"}]}"#)
+        #expect(result.tiles == .init(fetched: 1, failed: 0))
+        #expect(result.attribution == [Attribution(dataset: "overturemaps.org", collection: "place")])
+        #expect(result.places.map(\.collection) == [CollectionKey(dataset: "overturemaps.org", collection: "place")])
     }
 }

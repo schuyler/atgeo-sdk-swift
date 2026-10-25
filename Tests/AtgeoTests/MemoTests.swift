@@ -89,8 +89,8 @@ private let steps: [Step] = [
         for (i, step) in steps.enumerated() {
             switch step {
             case let .search(r, text, sort):
-                let a = try await plain.searchPlaces(region: regions[r].region, text: text, sort: sort)
-                let b = try await memo.searchPlaces(region: regions[r].region, text: text, sort: sort)
+                let a = try await plain.searchPlaces(region: regions[r].region, dataset: "overturemaps.org", text: text, collection: "place", sort: sort)
+                let b = try await memo.searchPlaces(region: regions[r].region, dataset: "overturemaps.org", text: text, collection: "place", sort: sort)
                 #expect(a == b, "step \(i)")
                 // Every record is in every region; m1 and m2 share one origin. Text drops what scores below 0.6.
                 let all = 3 * regions[r].tiles.count - (regions[r].tiles == [1, 2] ? 1 : 0)
@@ -120,29 +120,29 @@ private let steps: [Step] = [
     func typing() async throws {
         let server = try memoServer()
         let client = server.client()
-        let first = try await client.searchPlaces(region: regions[1].region, text: "a")
+        let first = try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", text: "a", collection: "place")
         let parses = await client.tileParses
         #expect(parses == 2)
         let requests = server.requests.count
         for text in ["al", "alp", "alph", "alpha"] {
-            _ = try await client.searchPlaces(region: regions[1].region, text: text)
+            _ = try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", text: text, collection: "place")
         }
         #expect(await client.tileParses == parses)
         #expect(server.requests.count == requests)
         #expect(await Set(client.memoizedTileURLs) == Set(["m0", "m1"].map(tileURL)))
-        #expect(try await client.searchPlaces(region: regions[1].region, text: "a") == first)
+        #expect(try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", text: "a", collection: "place") == first)
     }
 
     @Test("parses an older search's tiles again from the cache, without a request")
     func olderSearch() async throws {
         let server = try memoServer()
         let client = server.client()
-        let first = try await client.searchPlaces(region: regions[1].region, text: "alpha")
-        _ = try await client.searchPlaces(region: regions[2].region, text: "alpha")
+        let first = try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", text: "alpha", collection: "place")
+        _ = try await client.searchPlaces(region: regions[2].region, dataset: "overturemaps.org", text: "alpha", collection: "place")
         // Tile m1 is in both regions, so it stayed memoized; m0 is parsed again.
         #expect(await Set(client.memoizedTileURLs) == Set(["m1", "m2"].map(tileURL)))
         let parses = await client.tileParses, requests = server.requests.count
-        #expect(try await client.searchPlaces(region: regions[1].region, text: "alpha") == first)
+        #expect(try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", text: "alpha", collection: "place") == first)
         #expect(await client.tileParses == parses + 1)
         #expect(server.requests.count == requests)
         #expect(await Set(client.memoizedTileURLs) == Set(["m0", "m1"].map(tileURL)))
@@ -152,8 +152,8 @@ private let steps: [Step] = [
     func placeRecency() async throws {
         let server = try memoServer()
         let client = server.client()
-        _ = try await client.searchPlaces(region: regions[1].region)
-        _ = try await client.searchPlaces(region: regions[3].region)
+        _ = try await client.searchPlaces(region: regions[1].region, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchPlaces(region: regions[3].region, dataset: "overturemaps.org", collection: "place")
         let order = await client.cachedTileURLs
         let parses = await client.tileParses
         // p0-0 is only in m0, which the second search left unmemoized; p1-0 is in m1 and m2, and m1 is lower.
@@ -181,12 +181,12 @@ private let steps: [Step] = [
     func generations() {
         var cache = TileCache(budget: 100)
         let a = body(["x"]), b = body(["y"])
-        let first = cache.insert("a", body: a.body, keys: a.keys, size: 10)
+        let first = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
         #expect(cache.read("a")?.records == nil)
         cache.keepParsed([("a", first, a.records)])
         #expect(cache.read("a")?.records == a.records)
         // Replacing the URL drops the memo, and records from the old entry are refused.
-        let second = cache.insert("a", body: b.body, keys: b.keys, size: 10)
+        let second = cache.insert("a", body: b.body, keys: b.keys, size: 10, attribution: [])
         #expect(cache.read("a")?.records == nil)
         cache.keepParsed([("a", first, a.records)])
         #expect(cache.read("a")?.records == nil)
@@ -198,11 +198,11 @@ private let steps: [Step] = [
     func eviction() {
         var cache = TileCache(budget: 20)
         let a = body(["x"]), b = body(["y"]), c = body(["z"])
-        let ga = cache.insert("a", body: a.body, keys: a.keys, size: 10)
-        let gb = cache.insert("b", body: b.body, keys: b.keys, size: 10)
+        let ga = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
+        let gb = cache.insert("b", body: b.body, keys: b.keys, size: 10, attribution: [])
         cache.keepParsed([("a", ga, a.records), ("b", gb, b.records)])
         #expect(cache.memoized == ["a", "b"])
-        let gc = cache.insert("c", body: c.body, keys: c.keys, size: 10)
+        let gc = cache.insert("c", body: c.body, keys: c.keys, size: 10, attribution: [])
         #expect(cache.memoized == ["b"])
         // An evicted tile is not memoized again.
         cache.keepParsed([("a", ga, a.records), ("c", gc, c.records)])
@@ -214,7 +214,7 @@ private let steps: [Step] = [
     func off() {
         var cache = TileCache(budget: 20, memoize: false)
         let a = body(["x"])
-        let g = cache.insert("a", body: a.body, keys: a.keys, size: 10)
+        let g = cache.insert("a", body: a.body, keys: a.keys, size: 10, attribution: [])
         cache.keepParsed([("a", g, a.records)])
         #expect(cache.memoized.isEmpty)
         #expect(cache.read("a")?.records == nil)
@@ -225,7 +225,7 @@ private let steps: [Step] = [
         var cache = TileCache(budget: 100)
         for (url, origins) in [("c", ["k"]), ("a", ["j", "k"]), ("b", ["j"])] {
             let t = body(origins)
-            cache.insert(url, body: t.body, keys: t.keys, size: 1)
+            cache.insert(url, body: t.body, keys: t.keys, size: 1, attribution: [])
         }
         #expect(cache.lookup(key: "k").map(\.body) == [body(["j", "k"]).body, body(["k"]).body])
         #expect(cache.lookup(key: "q").isEmpty)

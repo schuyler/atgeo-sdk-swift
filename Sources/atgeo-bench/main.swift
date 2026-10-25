@@ -112,8 +112,8 @@ private struct BenchTransport: HTTPTransport {
 }
 
 /// Manchester, NH, where the synthetic records are; the second, slightly larger box gets the accented tiles.
-private let region = Region.bbox(minLon: -71.5, minLat: 42.96, maxLon: -71.4, maxLat: 43.04)
-private let accentedRegion = Region.bbox(minLon: -71.51, minLat: 42.95, maxLon: -71.39, maxLat: 43.05)
+private let region = Region.bbox(west: -71.5, south: 42.96, east: -71.4, north: 43.04)
+private let accentedRegion = Region.bbox(west: -71.51, south: 42.95, east: -71.39, north: 43.05)
 
 /// The box the client sends for a bbox region, snapped outward to 0.01 degrees (contract §3).
 private func queryBbox(_ region: Region) -> String {
@@ -219,7 +219,7 @@ func timeWarmSearch() async {
         var times: [Double] = []
         for text in (texts + texts).prefix(20) {
             let start = DispatchTime.now().uptimeNanoseconds
-            _ = try! await client.searchPlaces(region: c.region, text: text, dataset: "openstreetmap.org", collection: "node")
+            _ = try! await client.searchPlaces(region: c.region, dataset: "openstreetmap.org", text: text, collection: "node")
             times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
         }
         let names = Set(warm.places.compactMap { $0.place["name"]?.stringValue })

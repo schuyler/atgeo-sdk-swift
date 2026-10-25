@@ -97,7 +97,7 @@ func gzipOfZeros(_ count: Int) -> Data {
         }
         base.value = "http://127.0.0.1:\(server.port)"
         let client = AtgeoClient(server: URL(string: base.value)!, transport: URLSessionTransport(maxBodyBytes: 1000))
-        let result = try await client.searchPlaces(region: .bbox(minLon: 0, minLat: 0, maxLon: 0.01, maxLat: 0.01))
+        let result = try await client.searchPlaces(region: .bbox(west: 0, south: 0, east: 0.01, north: 0.01), dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 1))
         #expect(!result.complete)
     }

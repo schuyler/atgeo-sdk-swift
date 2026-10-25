@@ -9,14 +9,13 @@ public actor AtgeoClient {
     public static let defaultServer = URL(string: "https://places.atgeo.org")!
     public static let defaultCacheBudgetBytes = 50 * 1024 * 1024
 
-    private static let defaultDataset = "overturemaps.org"
-    private static let defaultCollection = "place"
     private static let maxTilesInFlight = 8
     private static let ttl: TimeInterval = 3600
 
     private struct LoadedTile: Sendable {
         var generation: Int
         var records: [PreparedRecord]
+        var attribution: [Attribution]
     }
 
     private struct TileList: Sendable {
@@ -32,7 +31,7 @@ public actor AtgeoClient {
     /// Caches `body` under `url` as if it had been fetched, without parsing it; for tests of a cached tile
     /// that fails to parse again, which a real fetch cannot cache.
     func cacheUnparsedTile(_ url: String, body: Data) {
-        _ = tiles.insert(url, body: body, keys: [], size: body.count)
+        _ = tiles.insert(url, body: body, keys: [], size: body.count, attribution: [])
     }
     private var tileLists: TtlCache<TileList>
     private var service: TtlCache<ServiceDescription>
@@ -73,8 +72,8 @@ public actor AtgeoClient {
 
     /// Places in `region`, filtered and ranked on the device by `text` (contract §4).
     ///
-    /// Without a dataset the search covers `overturemaps.org` / `place`; with a dataset and no collection,
-    /// the whole dataset.
+    /// `dataset` is required and has no default (contract §4.1). With a `collection` the search covers that
+    /// collection; without one, the whole dataset.
     ///
     /// - Throws: `AtgeoArgumentError` before any request, for an invalid region or for `.similarity` without
     ///   text; `AtgeoError` when `getTiles` answers non-2xx; `DecodingError` when its body holds no tile
@@ -82,20 +81,17 @@ public actor AtgeoClient {
     ///   `tileFailures` and counted in `tiles.failed`, never thrown, unless the search was cancelled.
     public func searchPlaces(
         region: Region,
+        dataset: String,
         text: String? = nil,
-        dataset: String? = nil,
         collection: String? = nil,
         sort: SortMode = .fused
     ) async throws -> SearchResult {
         try validateRegion(region)
         let query = normalize(text ?? "")
         if sort == .similarity && query.isEmpty { throw AtgeoArgumentError.similarityRequiresText }
-        // Contract §4.1: the collection defaults only when the dataset does.
-        let resolvedCollection = collection ?? (dataset == nil ? Self.defaultCollection : nil)
-        let resolvedDataset = dataset ?? Self.defaultDataset
         // No checkCancellation() here: a fully cached search completes even when cancelled (contract §11).
 
-        let lists = try await tileLists(dataset: resolvedDataset, collection: resolvedCollection, bboxes: queryBboxes(region))
+        let lists = try await tileLists(dataset: dataset, collection: collection, bboxes: queryBboxes(region))
         var seen = Set<OrdinalKey>()
         let urls = lists.flatMap(\.tiles).filter { seen.insert(OrdinalKey($0)).inserted }.sorted(by: ordinalLess)
         let (loaded, failures) = try await fetchTiles(urls)
@@ -106,11 +102,12 @@ public actor AtgeoClient {
         let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
         let result = SearchResult(
             places: assemble(records, region: region, query: query, sort: sort,
-                             dataset: resolvedDataset, collection: resolvedCollection),
+                             dataset: dataset, collection: collection),
             complete: failures.isEmpty,
             overview: lists.contains(where: \.overview),
             tiles: .init(fetched: loaded.count, failed: failures.count),
-            tileFailures: failures.sorted { ordinalLess($0.url, $1.url) })
+            tileFailures: failures.sorted { ordinalLess($0.url, $1.url) },
+            attribution: attributionUnion(urls.compactMap { loaded[OrdinalKey($0)]?.attribution }))
         // Logged only now, when the search is sure to return them, and in their order (contract §14).
         result.tileFailures.forEach(log)
         return result
@@ -156,8 +153,8 @@ public actor AtgeoClient {
     /// completion order; the caller sorts them.
     private func fetchTiles(_ urls: [String]) async throws -> (loaded: [OrdinalKey: LoadedTile], failures: [TileFailure]) {
         enum Child: Sendable {
-            case fetched(url: String, body: Data, records: [PreparedRecord], keys: Set<Int>)
-            case parsed(url: String, generation: Int, records: [PreparedRecord])
+            case fetched(url: String, body: Data, records: [PreparedRecord], keys: Set<Int>, attribution: [Attribution])
+            case parsed(url: String, generation: Int, records: [PreparedRecord], attribution: [Attribution])
             /// A fetch that failed, which held a request slot.
             case failed(TileFailure)
             /// A cached tile that failed to parse again, which held none.
@@ -175,13 +172,13 @@ public actor AtgeoClient {
                 while let url = pending.popFirst() {
                     if let cached = tiles.read(url) {
                         if let records = cached.records {
-                            loaded[OrdinalKey(url)] = LoadedTile(generation: cached.generation, records: records)
+                            loaded[OrdinalKey(url)] = LoadedTile(generation: cached.generation, records: records, attribution: cached.attribution)
                         } else {
                             group.addTask {
                                 // The body parsed when it was fetched, and parsing is deterministic, so this does
                                 // not fail. Were it to, the tile would be a `decode` failure rather than trap.
                                 do {
-                                    return .parsed(url: url, generation: cached.generation, records: try await cached.parsed())
+                                    return .parsed(url: url, generation: cached.generation, records: try await cached.parsed(), attribution: cached.attribution)
                                 } catch {
                                     return .reparseFailed(try tileFailure(url, .decode, error))
                                 }
@@ -203,8 +200,8 @@ public actor AtgeoClient {
                         }
                         do {
                             // Parsed here, in the child, so the actor is not held while it runs.
-                            let (records, keys) = try parseTile(body)
-                            return .fetched(url: url, body: body, records: records, keys: keys)
+                            let (records, keys, attribution) = try parseTileWithAttribution(body)
+                            return .fetched(url: url, body: body, records: records, keys: keys, attribution: attribution)
                         } catch {
                             return .failed(try tileFailure(url, .decode, error))
                         }
@@ -217,15 +214,15 @@ public actor AtgeoClient {
             while children > 0, let child = try await group.next() {
                 children -= 1
                 switch child {
-                case let .fetched(url, body, records, keys):
+                case let .fetched(url, body, records, keys, attribution):
                     // Outside the child's guards: an error here would fail the search, not the tile.
                     tileParses += 1
-                    let generation = tiles.insert(url, body: body, keys: keys, size: body.count)
-                    loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records)
+                    let generation = tiles.insert(url, body: body, keys: keys, size: body.count, attribution: attribution)
+                    loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records, attribution: attribution)
                     addNext()
-                case let .parsed(url, generation, records):
+                case let .parsed(url, generation, records, attribution):
                     tileParses += 1
-                    loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records)
+                    loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records, attribution: attribution)
                 case let .failed(failure):
                     failures.append(failure)
                     addNext()
@@ -242,14 +239,14 @@ public actor AtgeoClient {
     /// `org.atgeo.getPlace` (contract §9). The returned `origin` is the caller's.
     ///
     /// - Throws: `AtgeoError` (`PlaceNotFound` and others) for a non-2xx answer; `DecodingError` for a body
-    ///   with no `record` object; the transport's error on a network failure or cancellation.
+    ///   with no `value` object; the transport's error on a network failure or cancellation.
     public func place(origin: String) async throws -> PlaceRecord {
         // The scan reads only each tile's key hashes; the lowest tile URL that has the key is parsed off the
         // actor unless it is memoized. Within that tile, the first record with the key wins.
         for tile in tiles.lookup(key: origin) {
             if tile.records == nil { tileParses += 1 }
             if let cached = firstRecord((try? await tile.parsed()) ?? [], key: origin) {
-                return PlaceRecord(origin: origin, place: cached.value, importance: cached.importance)
+                return PlaceRecord(origin: origin, place: cached.value, importance: cached.importance, attribution: tile.attribution)
             }
         }
         guard let url = xrpcURL(base: base, nsid: "org.atgeo.getPlace", [("uri", origin)]) else { throw URLError(.badURL) }
@@ -277,4 +274,23 @@ public actor AtgeoClient {
 private func tileFailure(_ url: String, _ kind: TileFailure.Kind, _ error: any Error, status: Int? = nil) throws -> TileFailure {
     if Task.isCancelled { throw error }
     return TileFailure(url: url, kind: kind, status: status, error: error)
+}
+
+/// The union of the used tiles' attribution (contract §4.10). `lists` is in tile URL order, whatever order the tiles
+/// arrived in. The first entry for each (dataset, collection) pair wins, with no field filled in from a later one;
+/// the pair is a tuple, compared by UTF-16 code units, never a joined string. Sorted by dataset, then collection,
+/// in the ordinal order of §4.3.
+private func attributionUnion(_ lists: [[Attribution]]) -> [Attribution] {
+    struct Pair: Hashable {
+        var dataset: OrdinalKey
+        var collection: OrdinalKey
+    }
+    var seen = Set<Pair>()
+    var union: [Attribution] = []
+    for entry in lists.joined() where seen.insert(Pair(dataset: OrdinalKey(entry.dataset), collection: OrdinalKey(entry.collection))).inserted {
+        union.append(entry)
+    }
+    return union.sorted { a, b in
+        ordinalEqual(a.dataset, b.dataset) ? ordinalLess(a.collection, b.collection) : ordinalLess(a.dataset, b.dataset)
+    }
 }

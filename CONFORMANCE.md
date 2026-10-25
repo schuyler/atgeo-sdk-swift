@@ -4,7 +4,9 @@ Where this port's behaviour differs from the TypeScript reference at the margins
 leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode skew list spec §6 asks for.
 None of these cases arises from a compliant garganorn server.
 
-The fixtures are vendored at the commit named in `Tests/AtgeoTests/Fixtures/SOURCE`.
+The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
+`2710a14ba7d9485ddb6c00975f396e95389ac419` (the pin follow-up to the squash merge of schuyler/atgeo-sdk-js#43, `89539c49e014deb49464b278af2b7bc6f9df09fc`; `src/` and `fixtures/` are identical at both) and
+garganorn `2009984de02e9b3cbdf0f645213c99ec90ea3406`. CI's `fixtures` job holds them to those pins byte for byte.
 
 ## JSON parsing
 
@@ -124,3 +126,53 @@ leaves them open:
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode
 version differences between Foundation builds. None: all 41 cases, at the pinned commit, pass on every
 CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbreviations, `İ` and `ẞ`.
+
+## Fixtures and their runners
+
+- `normalize.json`, `jaro-winkler.json`: as before.
+- `ranking-scenarios.json`: run twice, through the internal pipeline and through the client, each as a search of
+  the scenario's `dataset` and `collection` (`RankingTests`).
+- `lenient-readers.json` (104 cases): `LenientReaderTests` runs all five readers and maps what each keeps into
+  the fixture's JSON terms by encoding the Swift value, so a nil optional is a missing key. The `tilePayload`
+  result is `{records, attribution?}`.
+- `attribution-scenarios.json` (12 scenarios): `AttributionScenarioTests`, with contract §13's rules: a fresh
+  client per scenario, a raw server that lists the scenario's tiles unsorted and serves each tile verbatim, the
+  default error body for a tile with a status and no body, no text and the default sort. Hits are compared as a
+  multiset of `(origin, collection)`, and each hit's `collection` must encode to exactly `dataset` and
+  `collection`.
+- Tile arrival order, which a fixture cannot express: the same runner reruns every scenario with more than one
+  tile with the lowest URL's response delayed most, so the highest URL arrives first, and asserts both that the
+  delays took effect and that the attribution and hits are unchanged.
+- Cache and copy behaviour (`CacheTests`, `ClientTests`, `ValueSemanticsTests`): warm and offline searches keep
+  their attribution and hit collections, `place(origin:)` answers with the lowest-URL source tile's attribution
+  or the response's, and a tile with no attribution, or one that isn't a list, gives an empty list.
+
+## Copies of what you're handed
+
+Contract §8 and §9 ask a port to hand out immutable values or copies of the place and the attribution. Swift
+does neither explicitly: `SearchHit`, `PlaceRecord`, `Attribution`, `CollectionKey` and `JSONValue` are values,
+and arrays and dictionaries copy on write, so an app that changes an answer changes its own copy. This goes
+deeper than the reference's shallow `Object.freeze`: nested objects and arrays are the app's too. The tests
+change an answer's `licenses`, release, order and nested place values and look at the next search and the next
+`place(origin:)`.
+
+## Required dataset
+
+`dataset` is a non-optional `String` in `searchPlaces(region:dataset:text:collection:sort:)`, so contract §4.1's
+"missing or non-string dataset" and "collection without a dataset" argument errors cannot arise: the call does not
+compile. There is no `AtgeoArgumentError` case for them. An empty string is sent as given.
+
+## Circle snapping
+
+The circle's enclosing box is written operation for operation as contract §3 asks
+(`half * .pi / 180` groups left to right), but `sin`, `cos` and `asin` come from the platform's libm, which can differ from V8's in the last bit for some
+inputs, and snapping can move an edge across a grid line when it does. It changes which cell is asked for, never
+what the wire reveals. No Swift-specific count has been measured.
+
+## Tile attribution in the cache
+
+Contract §10 lets a port that caches bodies parse the attribution again with them. This one reads a tile's
+attribution once, when the tile is fetched, and keeps it in the cache entry next to the body. A tile's size is
+still its body length, so the budget does not count it; the lists are small (a few entries per tile) and sit
+outside the budget, like the memo. Results are identical either way: a cached tile's records still carry the
+attribution of the tile they came from.

@@ -39,3 +39,6 @@ func place(_ id: String, _ name: String, _ locations: [JSONValue], _ extra: JSON
 func record(_ value: JSONObject, importance: Int64? = nil, uri: String? = nil) -> TileRecord {
     TileRecord(value: value, uri: uri, importance: importance)
 }
+
+/// What the fake's `overture(...)` tileset credits: its one collection (and no references).
+let overturePlaceAttribution = Attribution(dataset: "overturemaps.org", collection: "place")

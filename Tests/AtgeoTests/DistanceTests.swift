@@ -87,7 +87,7 @@ private func closeRelative(_ a: Double?, _ b: Double) -> Bool {
 
 @Suite("inRegion: bbox region seams") struct BboxRegionSeams {
     private static func region(_ west: Double, _ south: Double, _ east: Double, _ north: Double) -> Region {
-        .bbox(minLon: west, minLat: south, maxLon: east, maxLat: north)
+        .bbox(west: west, south: south, east: east, north: north)
     }
 
     @Test("keeps")
@@ -150,7 +150,7 @@ private func closeRelative(_ a: Double?, _ b: Double) -> Bool {
 
     @Test func aPlaceWithBothIsJudgedOnThePoint() {
         let both = locate(place("x", "X", [point(0, 0), bboxLocation(north: 50, south: 40, east: 10, west: 0)]))
-        #expect(!inRegion(both, .bbox(minLon: 0, minLat: 40, maxLon: 10, maxLat: 50)))
+        #expect(!inRegion(both, .bbox(west: 0, south: 40, east: 10, north: 50)))
     }
 }
 

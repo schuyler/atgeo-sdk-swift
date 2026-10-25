@@ -77,14 +77,53 @@ import Atgeo  // not @testable: everything here must be reachable from an app
                 }
                 return HTTPResponse(status: 200, body: Data(#"""
                 {"records":[{"uri":"u","value":{"origin":"urn:atgeo:overturemaps.org:place:1","name":"Here",
-                "locations":[{"$type":"community.lexicon.location.geo","latitude":"1","longitude":"1"}]}}]}
+                "locations":[{"$type":"community.lexicon.location.geo","latitude":"1","longitude":"1"}]}}],
+                "attribution":[{"dataset":"overturemaps.org","collection":"place","licenses":["CDLA-Permissive-2.0"]}]}
                 """#.utf8))
             }
         }
         let client = AtgeoClient(transport: Canned())
-        let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), text: "here")
+        let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", text: "here", collection: "place")
         #expect(result.places.map(\.origin) == ["urn:atgeo:overturemaps.org:place:1"])
         #expect(result.complete && result.tileFailures.isEmpty)
+        // Attribution and the hit's collection, through nothing but the public API (contract §4.10, §8).
+        #expect(result.attribution == [Attribution(dataset: "overturemaps.org", collection: "place", licenses: ["CDLA-Permissive-2.0"])])
+        #expect(result.places.first?.collection == CollectionKey(dataset: "overturemaps.org", collection: "place"))
+    }
+
+    // `dataset` is required, so a search without one does not compile (contract §4.1); the labels are in the order the
+    // spec gives. The empty string is a dataset like any other, and goes to the server.
+    @Test func searchPlacesTakesTheDatasetAfterTheRegion() async throws {
+        struct Recording: HTTPTransport {
+            func get(_ url: URL) async throws -> HTTPResponse { HTTPResponse(status: 400, body: Data(#"{"error":"DatasetNotFound"}"#.utf8)) }
+        }
+        let client = AtgeoClient(transport: Recording())
+        await #expect(throws: AtgeoError.self) {
+            _ = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "", text: nil, collection: nil, sort: .fused)
+        }
+    }
+
+    @Test func theNewFieldsCanBeBuiltAndRoundTripThroughJSON() throws {
+        let entry = Attribution(dataset: "d", collection: "c", release: "r", source: "s", licenses: ["l"], attribution: "a")
+        let hit = SearchHit(origin: "o", place: [:], importance: nil, distance: 1, score: nil, collection: CollectionKey(dataset: "d", collection: "c"))
+        let result = SearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0), attribution: [entry])
+        #expect(try JSONDecoder().decode(SearchResult.self, from: JSONEncoder().encode(result)) == result)
+        let record = PlaceRecord(origin: "o", place: [:], importance: 1, attribution: [entry])
+        #expect(try JSONDecoder().decode(PlaceRecord.self, from: JSONEncoder().encode(record)) == record)
+        #expect(ServiceDescription(did: nil, tilesets: [], maxTiles: 50).maxTiles == 50)
+        #expect(Tileset(slug: nil, collections: [], overview: .init(records: 7)).overview?.records == 7)
+        #expect(Region.bbox(west: 170, south: 10, east: -170, north: 20) != Region.bbox(west: -170, south: 10, east: 170, north: 20))
+    }
+
+    // Results encoded before attribution existed still decode, with none, as for tileFailures.
+    @Test func resultsEncodedBeforeAttributionExistedStillDecode() throws {
+        let old = Data(#"""
+        {"places":[{"origin":"o","place":{},"distance":1}],"complete":true,"overview":false,"tiles":{"fetched":1,"failed":0}}
+        """#.utf8)
+        let result = try JSONDecoder().decode(SearchResult.self, from: old)
+        #expect(result.attribution == [] && result.places.first?.collection == nil)
+        let record = try JSONDecoder().decode(PlaceRecord.self, from: Data(#"{"origin":"o","place":{}}"#.utf8))
+        #expect(record.attribution == [])
     }
 
     @Test func aSearchReportsItsFailedTiles() async throws {
@@ -97,7 +136,7 @@ import Atgeo  // not @testable: everything here must be reachable from an app
                 return HTTPResponse(status: 404, body: Data())
             }
         }
-        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10))
+        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures.map(\.url) == ["file:///x", "https://tiles.example/0.json", "https://tiles.example/1.json"])
         #expect(result.tileFailures.map(\.kind) == [.refused, .transport, .status])
         #expect(result.tileFailures.map(\.status) == [nil, nil, 404])

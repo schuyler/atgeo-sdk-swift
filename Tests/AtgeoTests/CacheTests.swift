@@ -105,7 +105,7 @@ private func rec(_ origin: String) -> TileRecord { TileRecord(value: ["origin": 
 
 // MARK: - Port of test/cache.test.ts, through the client
 
-private let sfRegion = Region.bbox(minLon: -122.42, minLat: 37.77, maxLon: -122.41, maxLat: 37.78)
+private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 private let otherOrigin = "urn:atgeo:example.org:thing:shared"
 /// 2026-01-01T00:00:00Z, as the reference sets its fake timers.
 private let start = Date(timeIntervalSince1970: 1_767_225_600)
@@ -130,9 +130,9 @@ private func cacheSetup() throws -> FakeServer {
     func offline() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        let first = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        let first = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", text: "Alpha", collection: "place")
         server.goOffline()
-        let second = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        let second = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", text: "Alpha", collection: "place")
         #expect(second == first)
         #expect(first.places.count > 0)
     }
@@ -141,9 +141,9 @@ private func cacheSetup() throws -> FakeServer {
     func differentText() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let before = server.requests.count
-        _ = try await client.searchPlaces(region: sfRegion, text: "Alpha")
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", text: "Alpha", collection: "place")
         #expect(server.requests.count == before)
     }
 
@@ -151,9 +151,61 @@ private func cacheSetup() throws -> FakeServer {
     func repeated() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion)
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requestStrings.filter { $0 == tileURL("a") }.count == 1)
+    }
+}
+
+@Suite("attribution in the tile cache") struct AttributionInTheTileCache {
+    @Test("gives a warm offline search the same, non-empty attribution and hit collections")
+    func warmOffline() async throws {
+        let server = try cacheSetup()
+        let client = server.client()
+        let first = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        #expect(!first.attribution.isEmpty)
+        #expect(!first.places.isEmpty)
+        #expect(first.places.allSatisfy { $0.collection != nil })
+        server.goOffline()
+        let second = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        #expect(second.attribution == first.attribution)
+        #expect(second.places.map(\.collection) == first.places.map(\.collection))
+    }
+
+    @Test("builds a search's attribution only from its own tiles, though another tile is still cached")
+    func ownTilesOnly() async throws {
+        let entryA: JSONObject = ["dataset": .string("ref-a.example"), "collection": .string("c")]
+        let entryB: JSONObject = ["dataset": .string("ref-b.example"), "collection": .string("c")]
+        var first = overture([FakeTile(url: tileURL("a"), records: [record(place("pa", "A", [point(37.775, -122.415)]))])])
+        first.references = [entryA]
+        let second = FakeTileset(
+            slug: "overture-place-b", collections: [["dataset": .string("overturemaps.org"), "collection": .string("place")]],
+            references: [entryB],
+            tiles: [FakeTile(url: tileURL("b"), records: [record(place("pb", "B", [point(10.55, -100.45)]))])])
+        let server = try FakeServer(tilesets: [first, second], tilesFor: { bbox in .tiles([bbox.hasPrefix("-122") ? tileURL("a") : tileURL("b")]) })
+        let client = server.client()
+        let a = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let b = try await client.searchPlaces(
+            region: .bbox(west: -100.5, south: 10.5, east: -100.4, north: 10.6), dataset: "overturemaps.org", collection: "place")
+        let place = overturePlaceAttribution
+        #expect(a.attribution == [place, Attribution(dataset: "ref-a.example", collection: "c")])
+        #expect(b.attribution == [place, Attribution(dataset: "ref-b.example", collection: "c")])
+        // And once more with both tiles cached.
+        let again = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        #expect(again.attribution == a.attribution)
+    }
+
+    @Test("a tile that fails to decode contributes no attribution, though its body carries a readable one")
+    func failedDecodeLeaksNothing() async throws {
+        let good = tileURL("good"), bad = tileURL("bad")
+        let server = try FakeServer(rawBodies: [
+            "https://places.atgeo.org/xrpc/org.atgeo.getTiles": HTTPResponse(status: 200, body: Data(#"{"tiles":["\#(bad)","\#(good)"]}"#.utf8)),
+            bad: HTTPResponse(status: 200, body: Data(#"{"records":"x","attribution":[{"dataset":"leak.example","collection":"c"}]}"#.utf8)),
+            good: HTTPResponse(status: 200, body: Data(#"{"records":[],"attribution":[{"dataset":"good.example","collection":"c"}]}"#.utf8)),
+        ])
+        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        #expect(result.tileFailures.map(\.kind) == [.decode])
+        #expect(result.attribution == [Attribution(dataset: "good.example", collection: "c")])
     }
 }
 
@@ -163,13 +215,13 @@ private func cacheSetup() throws -> FakeServer {
         let clock = TestClock(start)
         let server = try cacheSetup()
         let client = server.client(now: clock.closure)
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let base = server.requests.count
         clock.advance(milliseconds: 3_599_000)
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requests.count == base)
         clock.advance(milliseconds: 2_000)
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.getTilesRequests.count == 2)
         #expect(server.requestStrings.filter { $0 == tileURL("a") }.count == 1)
     }
@@ -179,10 +231,10 @@ private func cacheSetup() throws -> FakeServer {
         let clock = TestClock(start)
         let server = try cacheSetup()
         let client = server.client(now: clock.closure)
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
         clock.advance(milliseconds: 3_601_000)
-        await #expect(throws: (any Error).self) { _ = try await client.searchPlaces(region: sfRegion) }
+        await #expect(throws: (any Error).self) { _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
     }
 
     @Test("caches describeService for 3600 s")
@@ -205,18 +257,19 @@ private func cacheSetup() throws -> FakeServer {
     func fromTile() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let before = server.requests.count
         let found = try await client.place(origin: placeOrigin("a"))
         #expect(server.requests.count == before)
-        #expect(found == PlaceRecord(origin: placeOrigin("a"), place: place("a", "Alpha", [point(37.772, -122.412)]), importance: 3))
+        #expect(found == PlaceRecord(origin: placeOrigin("a"), place: place("a", "Alpha", [point(37.772, -122.412)]), importance: 3,
+                                     attribution: [overturePlaceAttribution]))
     }
 
     @Test("answers offline for a cached origin")
     func offline() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
         #expect(try await client.place(origin: placeOrigin("shared")).place["name"] == .string("Shared in A"))
     }
@@ -225,13 +278,68 @@ private func cacheSetup() throws -> FakeServer {
     func wholeOrigin() async throws {
         let server = try cacheSetup()
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let before = server.requests.count
         let found = try await client.place(origin: otherOrigin)
         let getPlaces = server.requests.dropFirst(before).filter { $0.path == "/xrpc/org.atgeo.getPlace" }
         #expect(getPlaces.count == 1)
         #expect(param(try #require(getPlaces.first), "uri") == otherOrigin)
         #expect(found.place["name"] == .string("Shared in other"))
+    }
+
+    @Test("takes the attribution of the lowest-URL tile, as served, though higher ones were cached before and after it")
+    func lowestURLAttribution() async throws {
+        let copy = { record(place("x", "Copy", [point(37.775, -122.415)])) }
+        let references: [JSONObject] = [
+            ["dataset": .string("z.example"), "collection": .string("c")],
+            ["dataset": .string("a.example"), "collection": .string("c"), "release": .string("1")],
+            ["dataset": .string("a.example"), "collection": .string("c"), "release": .string("2")],
+        ]
+        func tileset(_ slug: String, _ name: String, _ ref: String) -> FakeTileset {
+            FakeTileset(
+                slug: slug, collections: [["dataset": .string("overturemaps.org"), "collection": .string("place")]],
+                references: [["dataset": .string(ref), "collection": .string("c")]],
+                tiles: [FakeTile(url: tileURL(name), records: [copy()])])
+        }
+        var a = overture([FakeTile(url: tileURL("a"), records: [copy()])])
+        a.references = references
+        let server = try FakeServer(
+            tilesets: [a, tileset("overture-place-b", "b", "b.example"), tileset("overture-place-c", "c", "c.example")],
+            tilesFor: { bbox in .tiles([bbox.hasPrefix("-122") ? tileURL("a") : bbox.hasPrefix("-100") ? tileURL("b") : tileURL("c")]) })
+        let client = server.client()
+        // b, then a, then c: the lowest URL is neither the first nor the last cached.
+        _ = try await client.searchPlaces(region: .bbox(west: -100.5, south: 10.5, east: -100.4, north: 10.6), dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchPlaces(region: .bbox(west: 20.5, south: 10.5, east: 20.6, north: 10.6), dataset: "overturemaps.org", collection: "place")
+        server.goOffline()
+        let answer = try await client.place(origin: placeOrigin("x"))
+        #expect(answer.attribution == [
+            overturePlaceAttribution,
+            Attribution(dataset: "z.example", collection: "c"),
+            Attribution(dataset: "a.example", collection: "c", release: "1"),
+            Attribution(dataset: "a.example", collection: "c", release: "2"),
+        ])
+    }
+
+    @Test("gives an empty attribution from a tile with none, or with one that is not an array",
+          arguments: [String?.none, "{}", "null", #""x""#, "5"])
+    func emptyAttribution(attribution: String?) async throws {
+        let value = place("x", "Plain", [point(37.775, -122.415)])
+        let body = #"{"records":[{"value":\#(String(decoding: try JSONEncoder().encode(JSONValue.object(value)), as: UTF8.self)),"importance":3}]\#(attribution.map { #","attribution":\#($0)"# } ?? "")}"#
+        let url = tileURL("raw")
+        let server = try FakeServer(rawBodies: [
+            "https://places.atgeo.org/xrpc/org.atgeo.getTiles": HTTPResponse(status: 200, body: Data(#"{"tiles":["\#(url)"]}"#.utf8)),
+            url: HTTPResponse(status: 200, body: Data(body.utf8)),
+        ])
+        let client = server.client()
+        let result = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        #expect(result.places.count == 1)
+        #expect(result.places.first?.collection == nil)
+        #expect(result.attribution == [])
+        let before = server.requests.count
+        #expect(try await client.place(origin: placeOrigin("x"))
+                == PlaceRecord(origin: placeOrigin("x"), place: value, importance: 3, attribution: []))
+        #expect(server.requests.count == before)
     }
 
     @Test("returns the copy from the lowest tile URL, although a higher one was cached first")
@@ -241,9 +349,9 @@ private func cacheSetup() throws -> FakeServer {
             tilesets: [overture([FakeTile(url: tileURL("a"), records: [copy("Copy A")]), FakeTile(url: tileURL("b"), records: [copy("Copy B")])])],
             tilesFor: { bbox in .tiles([bbox.hasPrefix("-122") ? tileURL("a") : tileURL("b")]) })
         let client = server.client()
-        _ = try await client.searchPlaces(region: .bbox(minLon: -100.5, minLat: 10.5, maxLon: -100.4, maxLat: 10.6))
+        _ = try await client.searchPlaces(region: .bbox(west: -100.5, south: 10.5, east: -100.4, north: 10.6), dataset: "overturemaps.org", collection: "place")
         #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy B"))
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
         #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy A"))
     }
@@ -265,11 +373,11 @@ private func cacheSetup() throws -> FakeServer {
         let client = server.client(cacheBudgetBytes: budget)
         let tiles = { server.requestStrings.filter { $0.hasPrefix("https://tiles.example/") }.count }
         let before = tiles()
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(tiles() - before == 2)
         // a and b arrive in either order, so which one survives varies; exactly one does. The second search finds
         // it and fetches the other: not zero (nothing evicted) and not two (everything evicted).
-        _ = try await client.searchPlaces(region: sfRegion)
+        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(tiles() - before == 3)
     }
 }
