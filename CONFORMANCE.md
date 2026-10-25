@@ -5,7 +5,7 @@ leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode sk
 None of these cases arises from a compliant garganorn server.
 
 The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
-`2710a14ba7d9485ddb6c00975f396e95389ac419` (the squash merge of schuyler/atgeo-sdk-js#43 and its pin follow-up) and
+`2710a14ba7d9485ddb6c00975f396e95389ac419` (the pin follow-up to the squash merge of schuyler/atgeo-sdk-js#43, `89539c49e014deb49464b278af2b7bc6f9df09fc`; `src/` and `fixtures/` are identical at both) and
 garganorn `2009984de02e9b3cbdf0f645213c99ec90ea3406`. CI's `fixtures` job holds them to those pins byte for byte.
 
 ## JSON parsing
@@ -168,3 +168,11 @@ The circle's enclosing box is written operation for operation as contract §3 as
 (`half * .pi / 180` groups left to right), but `sin`, `cos` and `asin` come from the platform's libm, which can differ from V8's in the last bit for some
 inputs, and snapping can move an edge across a grid line when it does. It changes which cell is asked for, never
 what the wire reveals. No Swift-specific count has been measured.
+
+## Tile attribution in the cache
+
+Contract §10 lets a port that caches bodies parse the attribution again with them. This one reads a tile's
+attribution once, when the tile is fetched, and keeps it in the cache entry next to the body. A tile's size is
+still its body length, so the budget does not count it; the lists are small (a few entries per tile) and sit
+outside the budget, like the memo. Results are identical either way: a cached tile's records still carry the
+attribution of the tile they came from.

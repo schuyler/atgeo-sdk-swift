@@ -63,9 +63,9 @@ Every method is `async throws`. Cancel the calling `Task` to abort one.
 | Parameter | Meaning |
 |---|---|
 | `region` | Required. A circle or bounding box (below). |
-| `text` | Optional search text. Matched fuzzily against each place's `name` and its `variants[].name`, after lowercasing and stripping accents and extra whitespace. Each name is scored against the whole query and against the query's first 12 words one at a time; words past the 12th count only in the whole-query comparison. |
 | `dataset` | Required, with no default. The dataset to search, such as `overturemaps.org` or `openstreetmap.org`. It's a plain `String`, so leaving it out doesn't compile; an empty string is sent as given and the server answers for itself. |
-| `collection` | Optional. Restricts the search to one collection of the dataset, such as `way`. See below for the defaults. |
+| `text` | Optional search text. Matched fuzzily against each place's `name` and its `variants[].name`, after lowercasing and stripping accents and extra whitespace. Each name is scored against the whole query and against the query's first 12 words one at a time; words past the 12th count only in the whole-query comparison. |
+| `collection` | Optional. Restricts the search to one collection of the dataset, such as `way`. |
 | `sort` | `.fused` (default), `.distance`, or `.similarity`. |
 
 Regions:
@@ -125,7 +125,7 @@ public struct CollectionKey { public var dataset: String; public var collection:
 
 `result.attribution` is the credit for every collection whose data the search's tiles hold, references included: a hit's `within` relations carry a containing division's name, so an app that shows that name shows that collection's data too. It has one entry per (dataset, collection), sorted by dataset and then collection (by UTF-16 code units, like the reference), and it's always a list, empty when no tile was used or none carried any. It covers every tile the search used, whether or not a record in it survived the filtering; a tile that failed contributes nothing. When two tiles give different entries for one collection, the lowest tile URL wins.
 
-`hit.collection` is the entry of the hit's own tile whose `urn:atgeo:{dataset}:{collection}:` starts the hit's `place.origin` (the first, if several do). It's `nil` for a hit with no `origin`, even one keyed by a `uri`, and when the tile doesn't list a matching collection.
+`hit.collection` is the entry of the hit's own tile whose `urn:atgeo:{dataset}:{collection}:` starts the hit's `place.origin` (the first, if several do). It's `nil` for a hit whose `place` has no `origin`, even one keyed by a `uri`, and when the tile doesn't list a matching collection.
 
 Sort modes:
 
@@ -152,10 +152,6 @@ Returns a `PlaceRecord` with `origin`, `place`, `importance` and `attribution` (
 #### Changing what you're handed
 
 The `place` of a hit, and the answers to `place(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `SearchHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
-
-### `describeService() -> ServiceDescription`
-
-Returns the server's `did` and its `tilesets`, each a `slug` and its `collections` (`dataset`, `collection`). Cached for an hour.
 
 ### `describeTileset(_ slug:) -> Tileset`
 
