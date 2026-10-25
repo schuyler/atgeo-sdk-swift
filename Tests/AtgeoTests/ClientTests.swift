@@ -347,6 +347,21 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         #expect(places.map(\.origin) == ["urn:atgeo:openstreetmap.org:way:2"])
     }
 
+    // Contract §4.7: the filter is startsWith on `value.origin`, never contains.
+    @Test("keeps an origin that starts with the collection's prefix and drops one that merely contains it")
+    func filterIsStartsWith() async throws {
+        var contains = Self.osm("way", "5", 37.775)
+        contains["origin"] = .string("x:urn:atgeo:openstreetmap.org:way:5")
+        let fake = try FakeServer(tilesets: [FakeTileset(
+            slug: "osm", collections: [["dataset": .string("openstreetmap.org"), "collection": .string("way")]],
+            tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772)), record(contains)])])])
+        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
+        #expect(places.map(\.origin) == ["urn:atgeo:openstreetmap.org:way:2"])
+        let whole = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        #expect(whole.compactMap(\.origin).sorted() == ["urn:atgeo:openstreetmap.org:way:2", "x:urn:atgeo:openstreetmap.org:way:5"])
+        #expect(whole.first { $0.origin == "x:urn:atgeo:openstreetmap.org:way:5" }?.collection == nil)
+    }
+
     @Test("searches a whole dataset when only the dataset is named")
     func wholeDataset() async throws {
         let fake = try setup()
