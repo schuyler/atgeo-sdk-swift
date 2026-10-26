@@ -240,7 +240,7 @@ public actor AtgeoClient {
     ///
     /// - Throws: `AtgeoError` (`PlaceNotFound` and others) for a non-2xx answer; `DecodingError` for a body
     ///   with no `value` object; the transport's error on a network failure or cancellation.
-    public func place(origin: String) async throws -> PlaceRecord {
+    public func getPlace(origin: String) async throws -> PlaceRecord {
         // The scan reads only each tile's key hashes; the lowest tile URL that has the key is parsed off the
         // actor unless it is memoized. Within that tile, the first record with the key wins.
         for tile in tiles.lookup(key: origin) {

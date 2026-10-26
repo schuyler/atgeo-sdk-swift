@@ -296,7 +296,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
         #expect(result.places.map(\.origin) == ["urn:x:2", nil])
         #expect(result.places.map(\.importance) == [nil, nil])
         server.goOffline()
-        #expect(try await client.place(origin: "urn:x:2").place["locations"] != nil)
+        #expect(try await client.getPlace(origin: "urn:x:2").place["locations"] != nil)
     }
 
     @Test func aOneElementArrayCoordinateIsNoLocation() async throws {
@@ -337,12 +337,12 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
           arguments: ["null", "{}", #"{"uri":"u","value":null}"#, #"{"uri":"u","value":"x"}"#, #"{"uri":"x","record":{"name":"X"}}"#])
     func getPlaceWithoutValue(body: String) async throws {
         let server = try FakeServer(rawBodies: [getPlacePath: raw(200, body)])
-        #expect(await throwsDecodingError { _ = try await server.client().place(origin: "urn:x:1") })
+        #expect(await throwsDecodingError { _ = try await server.client().getPlace(origin: "urn:x:1") })
     }
 
     @Test func getPlaceReturnsTheValueAsServedWithAnUnreadableImportanceAbsent() async throws {
         let server = try FakeServer(rawBodies: [getPlacePath: raw(200, #"{"uri":5,"value":{"name":"X","extra":{"n":[1]}},"importance":"high"}"#)])
-        let answer = try await server.client().place(origin: "urn:x:1")
+        let answer = try await server.client().getPlace(origin: "urn:x:1")
         #expect(answer == PlaceRecord(
             origin: "urn:x:1", place: ["name": .string("X"), "extra": .object(["n": .array([.number(1)])])], importance: nil, attribution: []))
     }
@@ -350,7 +350,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func getPlaceSucceedsOnTheNewShapeAndReturnsItsAttributionAsServed() async throws {
         let body = #"{"uri":"urn:x:1","url":"https://x.example/p","importance":3,"value":{"name":"X"},"attribution":[{"dataset":"d","collection":"c","licenses":["l"]},null,{"dataset":"d"}]}"#
         let server = try FakeServer(rawBodies: [getPlacePath: raw(200, body)])
-        #expect(try await server.client().place(origin: "urn:x:1")
+        #expect(try await server.client().getPlace(origin: "urn:x:1")
                 == PlaceRecord(origin: "urn:x:1", place: ["name": .string("X")], importance: 3,
                                attribution: [Attribution(dataset: "d", collection: "c", licenses: ["l"])]))
     }

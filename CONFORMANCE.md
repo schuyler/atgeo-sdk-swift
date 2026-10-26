@@ -144,7 +144,7 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
   tile with the lowest URL's response delayed most, so the highest URL arrives first, and asserts both that the
   delays took effect and that the attribution and hits are unchanged.
 - Cache and copy behaviour (`CacheTests`, `ClientTests`, `ValueSemanticsTests`): warm and offline searches keep
-  their attribution and hit collections, `place(origin:)` answers with the lowest-URL source tile's attribution
+  their attribution and hit collections, `getPlace(origin:)` answers with the lowest-URL source tile's attribution
   or the response's, and a tile with no attribution, or one that isn't a list, gives an empty list.
 
 ## Copies of what you're handed
@@ -154,7 +154,7 @@ does neither explicitly: `SearchHit`, `PlaceRecord`, `Attribution`, `CollectionK
 and arrays and dictionaries copy on write, so an app that changes an answer changes its own copy. This goes
 deeper than the reference's shallow `Object.freeze`: nested objects and arrays are the app's too. The tests
 change an answer's `licenses`, release, order and nested place values and look at the next search and the next
-`place(origin:)`.
+`getPlace(origin:)`.
 
 ## Required dataset
 

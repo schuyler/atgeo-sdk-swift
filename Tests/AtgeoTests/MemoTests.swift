@@ -96,8 +96,8 @@ private let steps: [Step] = [
                 let all = 3 * regions[r].tiles.count - (regions[r].tiles == [1, 2] ? 1 : 0)
                 #expect(text == nil ? a.places.count == all : !a.places.isEmpty, "step \(i)")
             case let .place(origin):
-                let a = try await plain.place(origin: origin)
-                let b = try await memo.place(origin: origin)
+                let a = try await plain.getPlace(origin: origin)
+                let b = try await memo.getPlace(origin: origin)
                 #expect(a == b, "step \(i)")
             }
             #expect(plainServer.requestStrings == memoServer.requestStrings, "step \(i)")
@@ -148,7 +148,7 @@ private let steps: [Step] = [
         #expect(await Set(client.memoizedTileURLs) == Set(["m0", "m1"].map(tileURL)))
     }
 
-    @Test("place(origin:) leaves recency alone, memoized or parsed")
+    @Test("getPlace(origin:) leaves recency alone, memoized or parsed")
     func placeRecency() async throws {
         let server = try memoServer()
         let client = server.client()
@@ -157,11 +157,11 @@ private let steps: [Step] = [
         let order = await client.cachedTileURLs
         let parses = await client.tileParses
         // p0-0 is only in m0, which the second search left unmemoized; p1-0 is in m1 and m2, and m1 is lower.
-        #expect(try await client.place(origin: placeOrigin("p0-0")).place["name"] == .string("Alpha Cafe 0"))
-        #expect(try await client.place(origin: placeOrigin("p1-0")).place["name"] == .string("Alpha Cafe 1"))
+        #expect(try await client.getPlace(origin: placeOrigin("p0-0")).place["name"] == .string("Alpha Cafe 0"))
+        #expect(try await client.getPlace(origin: placeOrigin("p1-0")).place["name"] == .string("Alpha Cafe 1"))
         #expect(await client.tileParses == parses + 2)
         // From the memo, without parsing.
-        #expect(try await client.place(origin: placeOrigin("p3-0")).place["name"] == .string("Alpha Cafe 3"))
+        #expect(try await client.getPlace(origin: placeOrigin("p3-0")).place["name"] == .string("Alpha Cafe 3"))
         #expect(await client.tileParses == parses + 2)
         #expect(await client.cachedTileURLs == order)
         #expect(!server.requestStrings.contains { $0.contains("getPlace") })

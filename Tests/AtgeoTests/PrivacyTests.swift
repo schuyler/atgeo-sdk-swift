@@ -77,10 +77,10 @@ private func wire(_ requests: [URL]) -> [String] {
     }
 }
 
-@Suite("place(origin:) on a cache miss sends the origin and nothing else") struct PlaceSendsOnlyTheOrigin {
+@Suite("getPlace(origin:) on a cache miss sends the origin and nothing else") struct PlaceSendsOnlyTheOrigin {
     @Test func onlyTheOrigin() async throws {
         let server = try setup()
-        _ = try await server.client().place(origin: placeOrigin("r1"))
+        _ = try await server.client().getPlace(origin: placeOrigin("r1"))
         let url = try #require(server.requests.first)
         #expect(server.requests.count == 1)
         #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name) == ["uri"])
