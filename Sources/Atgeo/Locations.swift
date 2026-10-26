@@ -8,6 +8,9 @@ struct Locations {
     struct Box {
         var south: Double
         var north: Double
+        /// As read, so that `west > east` marks a box across the antimeridian (contract §5).
+        var west: Double
+        var east: Double
         var segments: [LonSegment]
     }
     var point: (lat: Double, lon: Double)?
@@ -43,11 +46,20 @@ func locate(_ value: JSONObject) -> Locations {
         } else if ordinalEqual(type, "community.lexicon.location.bbox") && result.bbox == nil {
             if let south = coordinate(loc["south"]), let north = coordinate(loc["north"]),
                let west = coordinate(loc["west"]), let east = coordinate(loc["east"]) {
-                result.bbox = Locations.Box(south: south, north: north, segments: lonSegments(west, east))
+                result.bbox = Locations.Box(south: south, north: north, west: west, east: east, segments: lonSegments(west, east))
             }
         }
     }
     return result
+}
+
+/// The `name` and `location` accessors of a hit or place record (contract §8): the first usable point and the
+/// first usable box, the box with its west and east as given.
+func placeLocation(_ value: JSONObject) -> PlaceLocation {
+    let locations = locate(value)
+    return PlaceLocation(
+        point: locations.point.map { .init(lat: $0.lat, lon: $0.lon) },
+        bbox: locations.bbox.map { .init(south: $0.south, west: $0.west, north: $0.north, east: $0.east) })
 }
 
 func haversine(_ lat1: Double, _ lon1: Double, _ lat2: Double, _ lon2: Double) -> Double {

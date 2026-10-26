@@ -129,7 +129,7 @@ private let maxQueryTokens = 12
 
 /// Splits on U+0020 by code unit, as JavaScript's `split(" ")` does. `String.split` would not split a
 /// space that a following combining mark joins into one grapheme cluster.
-private func words(_ s: [UInt16]) -> [[UInt16]] {
+func words(_ s: [UInt16]) -> [[UInt16]] {
     s.split(separator: 0x20, omittingEmptySubsequences: false).map(Array.init)
 }
 
@@ -189,4 +189,57 @@ struct OrdinalKey: Hashable, Sendable {
 /// Ordinal order, by UTF-16 code units, as JavaScript's `<` on strings.
 func ordinalLess(_ a: String, _ b: String) -> Bool {
     a.utf16.lexicographicallyPrecedes(b.utf16)
+}
+
+// Match tier, contract §7.
+
+/// Apostrophes vanish, other punctuation separates words: "mcdonalds" meets "McDonald's", "st louis" meets
+/// "St. Louis". Scalars of general category P* (Pc Pd Ps Pe Pi Pf Po) separate; symbols (S*) do not. U+0027,
+/// U+2019 and U+02BC are removed. The tokens are returned as UTF-16, the units a prefix is taken in.
+private func fold(_ s: some Sequence<Unicode.Scalar>) -> [[UInt16]] {
+    var tokens: [[UInt16]] = []
+    var current: [UInt16] = []
+    func flush() {
+        if !current.isEmpty { tokens.append(current); current = [] }
+    }
+    for u in s {
+        switch u.value {
+        case 0x27, 0x2019, 0x02BC: continue
+        case 0x20: flush(); continue
+        default: break
+        }
+        switch u.properties.generalCategory {
+        case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
+             .initialPunctuation, .finalPunctuation, .otherPunctuation:
+            flush()
+        default:
+            current.append(contentsOf: UTF16.encode(u)!)
+        }
+    }
+    flush()
+    return tokens
+}
+
+/// The folded tokens of the first twelve space-separated words of a normalized query. A word that folds to
+/// nothing still uses its slot among the twelve.
+func queryTokens(_ query: String) -> [[UInt16]] {
+    words(Array(query.utf16)).prefix(maxQueryTokens).flatMap { fold(String(decoding: $0, as: UTF16.self).unicodeScalars) }
+}
+
+/// 1 when every query token is a prefix of some token of one single name, else 2; a query with no tokens
+/// matches everything. The prefix is taken in UTF-16 code units, never with `String.hasPrefix`, which compares
+/// grapheme clusters: the query `क` is a prefix of the name `कि` (U+0915 U+093F) here and not there.
+/// `names` are the normalized names `textScore` uses. Called only for records that cleared the threshold.
+func matchTier(_ tokens: [[UInt16]], names: [[UInt16]]) -> Int {
+    if tokens.isEmpty { return 1 }
+    for name in names {
+        let nameTokens = fold(String(decoding: name, as: UTF16.self).unicodeScalars)
+        if tokens.allSatisfy({ q in nameTokens.contains { $0.starts(with: q) } }) { return 1 }
+    }
+    return 2
+}
+
+/// `matchTier` for a normalized query and a place value, as `fixtures/match-tiers.json` states it.
+func matchTier(_ query: String, _ place: JSONObject) -> Int {
+    matchTier(queryTokens(query), names: normalizedNames(place))
 }
