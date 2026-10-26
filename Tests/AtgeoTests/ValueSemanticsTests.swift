@@ -38,7 +38,7 @@ private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
 }
 
 @Suite("a search hit's place is the app's own value") struct HitPlace {
-    @Test("changing a copy leaves a later search over the same cached tile, and place(origin:) from the cache, unchanged")
+    @Test("changing a copy leaves a later search over the same cached tile, and getPlace(origin:) from the cache, unchanged")
     func copyIsIndependent() async throws {
         let (fake, client) = try setup()
         var hit = try await firstHit(client)
@@ -47,7 +47,7 @@ private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
         hit.place["extra"] = .number(1)
         let again = try await firstHit(client)
         #expect(again.place == makeValue())
-        #expect(try await client.place(origin: origin).place == makeValue())
+        #expect(try await client.getPlace(origin: origin).place == makeValue())
         #expect(fake.requests.filter { $0.absoluteString == tile }.count == 1)
     }
 
@@ -68,14 +68,14 @@ private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
         #expect(again.place["variants"]?.arrayValue?.count == 1)
     }
 
-    @Test("a hit from place(origin:) over the network is a copy too")
+    @Test("a hit from getPlace(origin:) over the network is a copy too")
     func networkPlace() async throws {
         let (fake, client) = try setup()
-        var fetched = try await client.place(origin: origin)
+        var fetched = try await client.getPlace(origin: origin)
         #expect(fake.requests.contains { $0.path == "/xrpc/org.atgeo.getPlace" })
         fetched.place["name"] = .string("Changed")
         #expect(fetched.place != makeValue())
-        #expect(try await client.place(origin: origin).place == makeValue())
+        #expect(try await client.getPlace(origin: origin).place == makeValue())
     }
 }
 
@@ -96,7 +96,7 @@ private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
         #expect(r2.attribution.first?.licenses == licenses)
         // Nothing was refetched to get there: the second search read the cache the first search's app could not reach.
         #expect(fake.requests.filter { $0.absoluteString == tile }.count == 1)
-        #expect(try await client.place(origin: origin).attribution == original)
+        #expect(try await client.getPlace(origin: origin).attribution == original)
     }
 
     @Test("a hit's collection is a copy: changing it changes the next search's hit by nothing")

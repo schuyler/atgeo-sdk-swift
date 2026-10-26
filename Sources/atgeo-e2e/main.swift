@@ -95,7 +95,7 @@ do {
     log("searchPlaces (text)", "\"\(name)\" -> top hit \(top), \(matched.places.count) places")
 
     let fresh = AtgeoClient(server: server)
-    let record = try await fresh.place(origin: origin)
+    let record = try await fresh.getPlace(origin: origin)
     check(record.place["name"]?.stringValue == name, "getPlace name \(record.place["name"] ?? .null) is not \(name)")
     check(!record.attribution.isEmpty, "getPlace answered with no attribution")
     log("getPlace", "\(origin) -> \(name), \(record.attribution.count) attribution entr(ies)")

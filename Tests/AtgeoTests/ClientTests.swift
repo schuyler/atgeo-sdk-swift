@@ -6,7 +6,7 @@ import Testing
 
 private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, north: 37.78)
 
-@Suite("place(origin:)") struct GetPlace {
+@Suite("getPlace(origin:)") struct GetPlace {
     let value = place("r1", "Ferry Building", [point(37.7955, -122.3937)], [
         "attributes": .object(["kind": .string("landmark")]),
         "futureKey": .object(["nested": .array([.number(1), .number(2)])]),
@@ -21,7 +21,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     @Test("sends one getPlace request with the origin as uri on a cold client, and no describeService")
     func oneRequest() async throws {
         let fake = try setup()
-        _ = try await fake.client().place(origin: origin)
+        _ = try await fake.client().getPlace(origin: origin)
         #expect(fake.requests.count == 1)
         let u = try #require(fake.requests.first)
         #expect(originAndPath(u) == "\(defaultServer)/xrpc/org.atgeo.getPlace")
@@ -31,23 +31,23 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 
     @Test("returns the value unmodified with importance beside it")
     func unmodified() async throws {
-        #expect(try await setup().client().place(origin: origin)
+        #expect(try await setup().client().getPlace(origin: origin)
                 == PlaceRecord(origin: origin, place: value, importance: 80, attribution: [overturePlaceAttribution]))
     }
 
     @Test("returns a nil importance when the server gives none")
     func nilImportance() async throws {
-        #expect(try await setup().client().place(origin: placeOrigin("r2")).importance == nil)
+        #expect(try await setup().client().getPlace(origin: placeOrigin("r2")).importance == nil)
     }
 
     @Test("returns the same answer from the cache and the network")
     func cacheEqualsNetwork() async throws {
         let fake = try setup()
-        let network = try await fake.client().place(origin: origin)
+        let network = try await fake.client().getPlace(origin: origin)
         let fresh = fake.client()
         _ = try await fresh.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place")
         let before = fake.requests.count
-        #expect(try await fresh.place(origin: origin) == network)
+        #expect(try await fresh.getPlace(origin: origin) == network)
         #expect(fake.requests.count == before)
     }
 
@@ -57,7 +57,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let client = fake.client()
         let places = try await client.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place").places
         let before = fake.requests.count
-        _ = try await client.place(origin: try #require(places.first?.origin))
+        _ = try await client.getPlace(origin: try #require(places.first?.origin))
         #expect(fake.requests.count == before)
     }
 
@@ -69,12 +69,12 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let places = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org").places
         #expect(places.first?.origin == "https://example.org/r/u")
         fake.goOffline()
-        #expect(try await client.place(origin: "https://example.org/r/u")
+        #expect(try await client.getPlace(origin: "https://example.org/r/u")
                 == PlaceRecord(origin: "https://example.org/r/u", place: uriOnly, importance: 4,
                                attribution: [overturePlaceAttribution]))
     }
 
-    // place(origin:) carries attribution as served (contract §9): from the cache, the attribution of the tile that
+    // getPlace(origin:) carries attribution as served (contract §9): from the cache, the attribution of the tile that
     // held the record; from the network, the response's. The fake's tileset credits its collection, then these
     // references, one of them twice.
     static let references: [JSONObject] = [
@@ -101,20 +101,20 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let client = fake.client()
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         fake.goOffline()
-        #expect(try await client.place(origin: origin).attribution == Self.served)
+        #expect(try await client.getPlace(origin: origin).attribution == Self.served)
     }
 
     @Test("returns the response's attribution from the network in served order, duplicates included, unsorted")
     func attributionFromNetwork() async throws {
         let fake = try withReferences()
-        let answer = try await fake.client().place(origin: origin)
+        let answer = try await fake.client().getPlace(origin: origin)
         #expect(fake.requests.contains { $0.path == "/xrpc/org.atgeo.getPlace" })
         #expect(answer.attribution == Self.served)
     }
 
     // Swift's structs are values: the answer is the app's own copy, so changing it, or an entry's `licenses`,
     // changes nothing the client caches. This is the contract's copy requirement (§9), met by the language.
-    @Test("changing a place(origin:) answer's attribution changes nothing cached", arguments: [true, false])
+    @Test("changing a getPlace(origin:) answer's attribution changes nothing cached", arguments: [true, false])
     func attributionIsTheAppsOwn(fromCache: Bool) async throws {
         var tileset = overture([FakeTile(url: tileURL("a"), records: [record(value, importance: 80)])])
         tileset.collections = [[
@@ -128,7 +128,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
             _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
             fake.goOffline()
         }
-        var first = try await client.place(origin: origin)
+        var first = try await client.getPlace(origin: origin)
         let original = first.attribution
         #expect(original.first?.licenses == ["https://l.example/1"])
         try #require(!first.attribution.isEmpty)
@@ -136,7 +136,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         first.attribution[0].release = "changed"
         first.attribution.reverse()
         first.place["name"] = .string("Changed")
-        let again = try await client.place(origin: origin)
+        let again = try await client.getPlace(origin: origin)
         #expect(again.attribution == original)
         #expect(again.place == value)
         if !fromCache { #expect(fake.requests.filter { $0.path == "/xrpc/org.atgeo.getPlace" }.count == 2) }
@@ -146,7 +146,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     func placeNotFound(unknown: String) async throws {
         let client = try setup().client()
         do {
-            _ = try await client.place(origin: unknown)
+            _ = try await client.getPlace(origin: unknown)
             Issue.record("expected PlaceNotFound")
         } catch let error as AtgeoError {
             #expect(error.code == "PlaceNotFound")

@@ -92,7 +92,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         let server = try FakeServer(rawBodies: [
             "\(defaultServer)/xrpc/org.atgeo.getPlace": HTTPResponse(status: expected, body: Data(body.utf8)),
         ])
-        #expect(await status { _ = try await server.client().place(origin: placeOrigin("x")) } == expected)
+        #expect(await status { _ = try await server.client().getPlace(origin: placeOrigin("x")) } == expected)
     }
 
     @Test("surfaces CollectionNotFound from getTiles")
@@ -146,7 +146,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         _ = try await client.describeService()
         _ = try await client.describeTileset("overture-place")
-        _ = try? await client.place(origin: placeOrigin("zzz"))
+        _ = try? await client.getPlace(origin: placeOrigin("zzz"))
         let xrpc = server.requests.filter { $0.absoluteString.contains("/xrpc/") }.map(originAndPath)
         #expect(xrpc == [
             "\(base)/xrpc/org.atgeo.getTiles", "\(base)/xrpc/org.atgeo.describeService",

@@ -145,13 +145,13 @@ When a region is too large for the server's regular tile budget and the collecti
 
 A place can be stored in several tiles. The client keeps one hit per origin (or per `uri`, for a record with no origin); when the copies differ, the copy from the lowest tile URL wins. Garganorn's copies are byte-identical, so this only matters for other producers' tilesets. The [JS README](https://github.com/schuyler/atgeo-sdk-js#places-that-appear-in-more-than-one-tile) has the long version.
 
-### `place(origin:) -> PlaceRecord`
+### `getPlace(origin:) -> PlaceRecord`
 
-Returns a `PlaceRecord` with `origin`, `place`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none. The other SDKs call this `getPlace`; here it follows Swift's naming guidelines.
+Returns a `PlaceRecord` with `origin`, `place`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none.
 
 #### Changing what you're handed
 
-The `place` of a hit, and the answers to `place(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `SearchHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
+The `place` of a hit, and the answers to `getPlace(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `SearchHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
 
 ### `describeTileset(_ slug:) -> Tileset`
 
@@ -167,7 +167,7 @@ Every field of the describe types is optional, and a field the server drops or r
 
 - `AtgeoError` has a `code`, a `message` and the HTTP `status`, which tells a request the server refused (4xx) from one it failed to answer (5xx) without matching on codes. Its `localizedDescription` is the message followed by the code in parentheses, and `AtgeoArgumentError`'s says what was wrong with the arguments. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
 - `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `south > north`, negative radius) and for `.similarity` without text, before any request.
-- A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `value` object for `place(origin:)`; the older `{uri, record}` shape counts as having none), throws `DecodingError`.
+- A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `value` object for `getPlace(origin:)`; the older `{uri, record}` shape counts as having none), throws `DecodingError`.
 - A failed `getTiles` request fails the whole search. A failed tile does not: that tile is skipped, not retried, and listed in `tileFailures`, which `tiles.failed` counts, and `complete` is `false`. A tile URL that isn't an absolute `http` or `https` URL, or that carries a username or password, is a failed tile too, and never reaches the transport, yours included.
 - A `TileFailure` has the tile's `url` as the server gave it, a `kind` saying where it failed, the HTTP `status` for `.status`, and the `error` itself. The kinds: `.refused` (the URL check above; no request, and the error is `URLError(.unsupportedURL)`), `.status` (a non-2xx answer; the error is its `AtgeoError`), `.decode` (a 2xx whose body isn't a tile payload) and `.transport` (whatever the transport threw: a network error, a timeout, a body over the cap, or anything your own transport throws, an `AtgeoError` included). `url`, `kind` and `status` are what every atgeo SDK reports; `error` is Swift's own, so `==` and `Codable` leave it out. The client always sets it; it's `nil` only in a failure decoded from JSON or one you built with `nil` yourself. Decoding a `kind` this version doesn't know throws. A cancelled search throws rather than listing its tiles as failed.
 - On Apple platforms each failed tile of a search that returns is also logged at debug level, subsystem `org.atgeo`, category `tiles`, with its kind and status public and its URL and error private: a tile URL says roughly where you searched. Nothing goes anywhere but your device's log, and nothing at all on Linux.
@@ -184,15 +184,15 @@ What does go on the wire:
 - `getTiles` with the snapped bbox, the search's dataset, and its collection if it has one. A region that crosses the antimeridian sends two.
 - Requests for the tile URLs the server returned, exactly as served, minus any already in the cache. So the server can tell which of those tiles this client fetched before (that you searched near here recently) but nothing finer than the tiles themselves.
 - `describeService` and `describeTileset`, only if you call them.
-- `place(origin:)` on a cache miss sends the origin of the place you asked for.
+- `getPlace(origin:)` on a cache miss sends the origin of the place you asked for.
 
 The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json`, `User-Agent: atgeo-client-swift` and `Accept-Language: *`, the same on every device. Left to itself, `URLSession` on Apple platforms would send a User-Agent naming your app, its build, and the CFNetwork and Darwin versions (so the OS version), and an Accept-Language listing the user's languages. It still adds headers of its own, such as `Accept-Encoding`, which vary by platform. A transport you supply sends whatever its stack does. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
 
 ## Caching
 
-`getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `place(origin:)` checks cached tiles before asking the server.
+`getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `getPlace(origin:)` checks cached tiles before asking the server.
 
-The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: 1.0 to 1.4 times, measured below, the rest being an index for `place(origin:)` and allocator overhead. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `place(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
+The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: 1.0 to 1.4 times, measured below, the rest being an index for `getPlace(origin:)` and allocator overhead. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `getPlace(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
 
 Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves (49.4 MiB of bodies), in a release build. On Linux the figure is RSS; on macOS it's the process's physical footprint, the number iOS and watchOS limit an app or extension by. Each is read after asking the allocator to return free pages:
 
@@ -231,7 +231,7 @@ There's also an end-to-end run against a live server, which isn't part of `swift
 ATGEO_SERVER=http://localhost:8000 swift run -c release atgeo-e2e
 ```
 
-It also checks `maxTiles`, the search's attribution, hit collections and `place(origin:)`'s attribution, so it fails against a server that predates [schuyler/garganorn#27](https://github.com/schuyler/garganorn/issues/27). Until that's deployed, it can't pass; that is expected, and the checks stay.
+It also checks `maxTiles`, the search's attribution, hit collections and `getPlace(origin:)`'s attribution, so it fails against a server that predates [schuyler/garganorn#27](https://github.com/schuyler/garganorn/issues/27). Until that's deployed, it can't pass; that is expected, and the checks stay.
 
 It takes the same environment variables as the reference's `scripts/e2e.ts`: `ATGEO_SERVER` (default `http://localhost:8000`), `ATGEO_DATASET` (default `openstreetmap.org`), `ATGEO_COLLECTION` (default none), and `ATGEO_REGION` as `lat,lon,radius` in meters (default `43.0,-71.45,3000`, Manchester, NH). It prints a line per step, exits non-zero on the first failure, and finishes by timing the parser on the largest tile it fetched.
 

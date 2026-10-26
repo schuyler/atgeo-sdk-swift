@@ -252,14 +252,14 @@ private func cacheSetup() throws -> FakeServer {
     }
 }
 
-@Suite("place(origin:) cache scan") struct PlaceCacheScan {
+@Suite("getPlace(origin:) cache scan") struct PlaceCacheScan {
     @Test("answers from an already-fetched tile without a request")
     func fromTile() async throws {
         let server = try cacheSetup()
         let client = server.client()
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let before = server.requests.count
-        let found = try await client.place(origin: placeOrigin("a"))
+        let found = try await client.getPlace(origin: placeOrigin("a"))
         #expect(server.requests.count == before)
         #expect(found == PlaceRecord(origin: placeOrigin("a"), place: place("a", "Alpha", [point(37.772, -122.412)]), importance: 3,
                                      attribution: [overturePlaceAttribution]))
@@ -271,7 +271,7 @@ private func cacheSetup() throws -> FakeServer {
         let client = server.client()
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
-        #expect(try await client.place(origin: placeOrigin("shared")).place["name"] == .string("Shared in A"))
+        #expect(try await client.getPlace(origin: placeOrigin("shared")).place["name"] == .string("Shared in A"))
     }
 
     @Test("matches the whole origin, not a shared id")
@@ -280,7 +280,7 @@ private func cacheSetup() throws -> FakeServer {
         let client = server.client()
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let before = server.requests.count
-        let found = try await client.place(origin: otherOrigin)
+        let found = try await client.getPlace(origin: otherOrigin)
         let getPlaces = server.requests.dropFirst(before).filter { $0.path == "/xrpc/org.atgeo.getPlace" }
         #expect(getPlaces.count == 1)
         #expect(param(try #require(getPlaces.first), "uri") == otherOrigin)
@@ -312,7 +312,7 @@ private func cacheSetup() throws -> FakeServer {
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         _ = try await client.searchPlaces(region: .bbox(west: 20.5, south: 10.5, east: 20.6, north: 10.6), dataset: "overturemaps.org", collection: "place")
         server.goOffline()
-        let answer = try await client.place(origin: placeOrigin("x"))
+        let answer = try await client.getPlace(origin: placeOrigin("x"))
         #expect(answer.attribution == [
             overturePlaceAttribution,
             Attribution(dataset: "z.example", collection: "c"),
@@ -337,7 +337,7 @@ private func cacheSetup() throws -> FakeServer {
         #expect(result.places.first?.collection == nil)
         #expect(result.attribution == [])
         let before = server.requests.count
-        #expect(try await client.place(origin: placeOrigin("x"))
+        #expect(try await client.getPlace(origin: placeOrigin("x"))
                 == PlaceRecord(origin: placeOrigin("x"), place: value, importance: 3, attribution: []))
         #expect(server.requests.count == before)
     }
@@ -350,10 +350,10 @@ private func cacheSetup() throws -> FakeServer {
             tilesFor: { bbox in .tiles([bbox.hasPrefix("-122") ? tileURL("a") : tileURL("b")]) })
         let client = server.client()
         _ = try await client.searchPlaces(region: .bbox(west: -100.5, south: 10.5, east: -100.4, north: 10.6), dataset: "overturemaps.org", collection: "place")
-        #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy B"))
+        #expect(try await client.getPlace(origin: placeOrigin("x")).place["name"] == .string("Copy B"))
         _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
-        #expect(try await client.place(origin: placeOrigin("x")).place["name"] == .string("Copy A"))
+        #expect(try await client.getPlace(origin: placeOrigin("x")).place["name"] == .string("Copy A"))
     }
 }
 
