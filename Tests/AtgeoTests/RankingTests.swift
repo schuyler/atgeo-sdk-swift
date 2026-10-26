@@ -9,6 +9,8 @@ struct RankingScenario: Sendable, CustomTestStringConvertible {
     var region: Region
     var text: String?
     var sort: SortMode
+    /// The fake server answers getTiles with an overview (contract §8).
+    var overview: Bool
     var records: [TileRecord]
     var top: [(k: Int, origins: [String])]
     var absent: [String]
@@ -40,6 +42,7 @@ private func scenarios() throws -> [RankingScenario] {
             region: region,
             text: s["text"]?.stringValue,
             sort: s["sort"]?.stringValue.flatMap(SortMode.init(rawValue:)) ?? .fused,
+            overview: s["overview"]?.boolValue ?? false,
             records: records,
             top: top,
             absent: expect["absent"]?.arrayValue?.compactMap(\.stringValue) ?? [])
@@ -61,7 +64,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
     func scenario(_ s: RankingScenario) {
         let places = assemble(
             records: s.records, region: s.region, query: normalize(s.text ?? ""), sort: s.sort,
-            dataset: s.dataset, collection: s.collection)
+            dataset: s.dataset, collection: s.collection, overview: s.overview)
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {
             for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }
@@ -71,7 +74,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
     }
 
     @Test func fixtureIsTheVendoredOne() throws {
-        #expect(try scenarios().count == 12)
+        #expect(try scenarios().count == 19)
     }
 
     // Addendum E: a literal (b.importance ?? 0) - (a.importance ?? 0) traps here.
@@ -126,7 +129,11 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
 @Suite struct RankingThroughTheClientTests {
     @Test("ranking scenarios", arguments: try scenarios())
     func scenario(_ s: RankingScenario) async throws {
-        let server = try FakeServer(tilesets: [overture([FakeTile(url: "https://places.atgeo.org/tiles/t0.json", records: s.records)])])
+        let url = "https://places.atgeo.org/tiles/t0.json"
+        let body: JSONObject = ["tiles": .array([.string(url)]), "overview": .bool(true)]
+        var tilesFor: (@Sendable (String) -> TilesForAnswer)?
+        if s.overview { tilesFor = { _ in TilesForAnswer.body(body) } }
+        let server = try FakeServer(tilesets: [overture([FakeTile(url: url, records: s.records)])], tilesFor: tilesFor)
         let places = try await server.client().searchPlaces(region: s.region, dataset: s.dataset, text: s.text, collection: s.collection, sort: s.sort).places
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {

@@ -100,11 +100,12 @@ public actor AtgeoClient {
         // In URL order, whatever order the tiles arrived in, so the dedupe winner is fixed (contract §4.3), and
         // so are the failures (§4.4).
         let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
+        let overview = lists.contains(where: \.overview)
         let result = SearchResult(
             places: assemble(records, region: region, query: query, sort: sort,
-                             dataset: dataset, collection: collection),
+                             dataset: dataset, collection: collection, overview: overview),
             complete: failures.isEmpty,
-            overview: lists.contains(where: \.overview),
+            overview: overview,
             tiles: .init(fetched: loaded.count, failed: failures.count),
             tileFailures: failures.sorted { ordinalLess($0.url, $1.url) },
             attribution: attributionUnion(urls.compactMap { loaded[OrdinalKey($0)]?.attribution }))

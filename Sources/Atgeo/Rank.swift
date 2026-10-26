@@ -19,12 +19,16 @@ private func compare<T: Comparable>(_ x: T, _ y: T) -> Int { x < y ? -1 : x > y 
 
 private struct Ranked {
     var hit: SearchHit
+    /// 1 or 2 with text, nil without (contract §7).
+    var tier: Int?
     var specificity: Double
     var index: Int
 }
 
 private typealias Comparator = @Sendable (Ranked, Ranked) -> Int
 
+/// Exact matches first; nil ties with nil, and without text every tier is nil.
+private let byTier: Comparator = { a, b in compare(a.tier ?? 0, b.tier ?? 0) }
 private let byScore: Comparator = { a, b in compare(round3(b.hit.score ?? 0), round3(a.hit.score ?? 0)) }
 private let byImportance: Comparator = { a, b in compare(b.hit.importance ?? 0, a.hit.importance ?? 0) }
 private let byDistance: Comparator = { a, b in compare(a.hit.distance, b.hit.distance) }
@@ -41,32 +45,36 @@ private let byOrigin: Comparator = { a, b in
     }
 }
 
-/// Builds the hits for records that passed the region filter, drops those scoring below the threshold,
-/// and sorts them. `query` is already normalized; "" means no text.
-func rank(_ records: [TileRecord], region: Region, query: String, sort: SortMode) -> [SearchHit] {
-    rank(records.map(PreparedRecord.init), region: region, query: query, sort: sort)
+/// Builds the hits for records that passed the region filter, drops those scoring below the threshold, and, with
+/// text on an `overview` answer, those that match only fuzzily (tier 2), and sorts them. `query` is already
+/// normalized; "" means no text.
+func rank(_ records: [TileRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [SearchHit] {
+    rank(records.map(PreparedRecord.init), region: region, query: query, sort: sort, overview: overview)
 }
 
-func rank(_ records: [PreparedRecord], region: Region, query: String, sort: SortMode) -> [SearchHit] {
+func rank(_ records: [PreparedRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [SearchHit] {
     let middle = center(region)
+    let tokens = query.isEmpty ? [] : queryTokens(query)
     var ranked: [Ranked] = []
     for prepared in records {
         let record = prepared.record
         let score = query.isEmpty ? nil : textScore(query: query, names: prepared.names)
         if let score, score < scoreThreshold { continue }
+        let tier = score == nil ? nil : matchTier(tokens, names: prepared.names)
+        if tier == 2 && overview { continue }
         let locations = locate(record.value)
         // The region filter already required a location, so there is always a distance.
         guard let distance = distanceTo(locations, lat: middle.lat, lon: middle.lon) else { continue }
         let hit = SearchHit(
             origin: recordKey(record), place: record.value, importance: record.importance,
             distance: distance, score: score, collection: hitCollection(record, attribution: prepared.attribution))
-        ranked.append(Ranked(hit: hit, specificity: specificity(locations), index: ranked.count))
+        ranked.append(Ranked(hit: hit, tier: tier, specificity: specificity(locations), index: ranked.count))
     }
 
     let order: [Comparator] = switch sort {
-    case .distance: [byDistance, bySpecificity, byImportance, byScore, byOrigin]
-    case .similarity: [byScore, byDistance, byOrigin]
-    case .fused: [byScore, byImportance, byDistance, byOrigin]
+    case .distance: [byTier, byDistance, bySpecificity, byImportance, byScore, byOrigin]
+    case .similarity: [byTier, byScore, byDistance, byOrigin]
+    case .fused: [byTier, byScore, byImportance, byDistance, byOrigin]
     }
     // Fold the comparators as the reference does; the input index is the final tie-break, so stability does
     // not depend on the toolchain's sort.

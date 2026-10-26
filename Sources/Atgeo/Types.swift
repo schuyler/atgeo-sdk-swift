@@ -89,6 +89,33 @@ public struct TileFailure: Sendable, Equatable, Codable {
     }
 }
 
+/// Where a place is, as its first usable geo point and first usable bbox (contract §5), in the lexicon's field
+/// names. Either or both may be nil.
+public struct PlaceLocation: Sendable, Equatable, Codable {
+    public var point: Point?
+    public var bbox: Box?
+
+    /// A point in degrees.
+    public struct Point: Sendable, Equatable, Codable {
+        public var lat: Double
+        public var lon: Double
+        public init(lat: Double, lon: Double) { self.lat = lat; self.lon = lon }
+    }
+
+    /// A box in degrees, as the lexicon names its sides, kept as read: `west > east` crosses the antimeridian.
+    public struct Box: Sendable, Equatable, Codable {
+        public var south: Double
+        public var west: Double
+        public var north: Double
+        public var east: Double
+        public init(south: Double, west: Double, north: Double, east: Double) {
+            self.south = south; self.west = west; self.north = north; self.east = east
+        }
+    }
+
+    public init(point: Point? = nil, bbox: Box? = nil) { self.point = point; self.bbox = bbox }
+}
+
 public struct SearchHit: Sendable, Equatable, Codable {
     public var origin: String?
     public var place: JSONObject
@@ -106,6 +133,12 @@ public struct SearchHit: Sendable, Equatable, Codable {
         self.score = score
         self.collection = collection
     }
+
+    /// The place's `name` when it is a string, else nil (contract §8).
+    public var name: String? { place["name"]?.stringValue }
+
+    /// Where the place is (contract §8): the first usable point and the first usable box of `place`.
+    public var location: PlaceLocation { placeLocation(place) }
 }
 
 public struct PlaceRecord: Sendable, Equatable, Codable {
@@ -121,6 +154,12 @@ public struct PlaceRecord: Sendable, Equatable, Codable {
         self.importance = importance
         self.attribution = attribution
     }
+
+    /// The place's `name` when it is a string, else nil (contract §8).
+    public var name: String? { place["name"]?.stringValue }
+
+    /// Where the place is (contract §8): the first usable point and the first usable box of `place`.
+    public var location: PlaceLocation { placeLocation(place) }
 
     private enum CodingKeys: String, CodingKey { case origin, place, importance, attribution }
 

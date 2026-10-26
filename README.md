@@ -18,11 +18,11 @@ let result = try await atgeo.searchPlaces(
 )
 
 for hit in result.places {
-    print(hit.place["name"]?.stringValue ?? "-", Int(hit.distance), hit.score ?? 0, hit.origin ?? "-")
+    print(hit.name ?? "-", Int(hit.distance), hit.score ?? 0, hit.origin ?? "-")
 }
 ```
 
-Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy, and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
+Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy (words that match exactly rank first), and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
 
 ## Installation
 
@@ -99,18 +99,27 @@ public struct SearchResult {
 public struct SearchHit {
     public var origin: String?       // the place's identity: place.origin, else the tile record's uri, else nil
     public var place: JSONObject     // the record value, exactly as served
+    public var name: String? { get } // place["name"] when it is a string, else nil
+    public var location: PlaceLocation { get }  // where the place is: the first usable point and box; see below
     public var importance: Int64?    // an integer relative to its tileset; nil if it has none
     public var distance: Double      // meters from the region's center to the nearest point of the place; 0 if the place contains the center
     public var score: Double?        // 0 to 1 text similarity; nil if no text was given
     public var collection: CollectionKey?  // the collection this place belongs to (dataset and collection); nil if the tile doesn't say
 }
+
+public struct PlaceLocation {            // Sendable, Equatable and Codable
+    public var point: Point?             // the first usable geo location: lat, lon
+    public var bbox: Box?                // the first usable bbox location: south, west, north, east
+}
 ```
 
-`JSONObject` is `[String: JSONValue]`, and `JSONValue` is an enum of the six JSON types, with `stringValue`, `doubleValue`, `boolValue`, `arrayValue` and `objectValue` accessors and subscripts by key and index, so `hit.place["locations"]?[0]?["latitude"]?.stringValue` reads what you'd expect. Nothing about a place is decoded into a Swift type: `place` is the gazetteer's value untouched, every key as served. Importance lives on `hit.importance` and identity on `hit.origin`.
+`name` and `location` are computed from `place` each time you read them, so `SearchHit` and `PlaceRecord` keep their memberwise initializers and their `Codable` form. `location` is what the client itself reads to rank and filter, in the lexicon's field names: coordinates can be strings or numbers on the wire, and you get `Double`s. A box with `west > east` crosses the antimeridian, and is given as it was read. A place with no usable point or box has `nil` for it. `PlaceRecord` has both too.
+
+`JSONObject` is `[String: JSONValue]`, and `JSONValue` is an enum of the six JSON types, with `stringValue`, `doubleValue`, `boolValue`, `arrayValue` and `objectValue` accessors and subscripts by key and index, so `hit.place["locations"]?[0]?["latitude"]?.stringValue` reads what you'd expect. Nothing about a place is decoded into a Swift type: `place` is the gazetteer's value untouched, every key as served. Importance lives on `hit.importance`, identity on `hit.origin`, and the name and location the client reads are on `hit.name` and `hit.location`.
 
 Every result type has a public initializer, so you can build a `SearchResult` or a `PlaceRecord` for your own tests and SwiftUI previews without a server. They're `Codable` too, so a saved place can be a `PlaceRecord` written with `JSONEncoder`. One catch: a number too large for a double, which no garganorn sends, is read as infinity (as JavaScript reads it), and `JSONEncoder` refuses to write infinity unless you set its `nonConformingFloatEncodingStrategy`.
 
-When `text` is given, places scoring below 0.6 are dropped.
+When `text` is given, places scoring below 0.6 are dropped. The rest rank in two tiers, whatever the sort mode: a place with a name (its own or a variant) that has every word of the query as the start of one of its words (apostrophes ignored, other punctuation splitting words, so `mcdonalds` finds `McDonald's` and `st louis` finds `St. Louis`) comes before one that matches only fuzzily. Within a tier, the sort mode decides.
 
 #### Attribution
 
@@ -129,15 +138,15 @@ public struct CollectionKey { public var dataset: String; public var collection:
 
 Sort modes:
 
-- `.fused` orders by text similarity (best first), breaking near-ties by the hit's `importance`, then by distance. Without text, that means importance, then distance. This is the one you usually want.
-- `.distance` orders nearest first, then smaller place first (so the most specific of the places containing the center leads), then by importance, then similarity. Text still filters out poor matches.
-- `.similarity` orders by text similarity, then nearest first. It throws without `text`.
+- `.fused` orders by tier, then text similarity (best first), breaking near-ties by the hit's `importance`, then by distance. Without text, that means importance, then distance. This is the one you usually want.
+- `.distance` orders by tier, then nearest first, then smaller place first (so the most specific of the places containing the center leads), then by importance, then similarity. Text still filters out poor matches.
+- `.similarity` orders by tier, then text similarity, then nearest first. It throws without `text`.
 
 Similarity is compared to three decimal places, so scores that differ only beyond that count as ties. Remaining ties break on `origin` (a hit with no `origin` sorts last), so ordering is deterministic.
 
 #### Overview answers
 
-When a region is too large for the server's regular tile budget and the collection has an overview, the server answers with that instead: a coarse tileset holding only the most important places. The search still runs normally over those tiles, and `overview` is `true`. The list is not everything in the region.
+When a region is too large for the server's regular tile budget and the collection has an overview, the server answers with that instead: a coarse tileset holding only the most important places. The search still runs normally over those tiles, and `overview` is `true`. With `text`, an overview answer keeps only the places that match every query word (tier 1): fuzzy matches are dropped, since the coarse set can't hold the place you meant. The list is not everything in the region.
 
 `overview` and `complete` are independent: `complete` says whether every tile the server named loaded, and `overview` says whether the server named a thin set of tiles to begin with. If `overview` is `true`, don't treat the results as exhaustive. Show something like "zoom in for more" and search a smaller region to get the full set.
 
@@ -147,7 +156,7 @@ A place can be stored in several tiles. The client keeps one hit per origin (or 
 
 ### `getPlace(origin:) -> PlaceRecord`
 
-Returns a `PlaceRecord` with `origin`, `place`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none.
+Returns a `PlaceRecord` with `origin`, `place`, `name`, `location`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none.
 
 #### Changing what you're handed
 

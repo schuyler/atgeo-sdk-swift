@@ -44,16 +44,19 @@ func hitCollection(_ r: TileRecord, attribution: [Attribution]) -> CollectionKey
 /// Contract §4.6 to §4.9 over the concatenated records of the used tiles, in URL order. `query` is
 /// already normalized; "" means no text. `collection` is the resolved collection, nil for a whole dataset.
 func assemble(
-    records: [TileRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?
+    records: [TileRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?,
+    overview: Bool = false
 ) -> [SearchHit] {
-    assemble(records.map(PreparedRecord.init), region: region, query: query, sort: sort, dataset: dataset, collection: collection)
+    assemble(records.map(PreparedRecord.init), region: region, query: query, sort: sort, dataset: dataset, collection: collection,
+             overview: overview)
 }
 
 func assemble(
-    _ records: [PreparedRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?
+    _ records: [PreparedRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?,
+    overview: Bool = false
 ) -> [SearchHit] {
     let kept = dedupe(records)
         .filter { p in collection.map { inCollection(p.record, dataset: dataset, collection: $0) } ?? true }
         .filter { inRegion(locate($0.record.value), region) }
-    return rank(kept, region: region, query: query, sort: sort)
+    return rank(kept, region: region, query: query, sort: sort, overview: overview)
 }

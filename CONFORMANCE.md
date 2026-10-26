@@ -5,7 +5,8 @@ leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode sk
 None of these cases arises from a compliant garganorn server.
 
 The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
-`2710a14ba7d9485ddb6c00975f396e95389ac419` (the pin follow-up to the squash merge of schuyler/atgeo-sdk-js#43, `89539c49e014deb49464b278af2b7bc6f9df09fc`; `src/` and `fixtures/` are identical at both) and
+`754aa0917d2839b489f0be3be60ac3b7530a52c7` (the squash merge of schuyler/atgeo-sdk-js#49: match tiers, the overview
+fuzzy drop, `name` and `location`; `test/lexicon/` is unchanged since the previous pin, `2710a14`) and
 garganorn `2009984de02e9b3cbdf0f645213c99ec90ea3406`. CI's `fixtures` job holds them to those pins byte for byte.
 
 ## JSON parsing
@@ -130,8 +131,15 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
 ## Fixtures and their runners
 
 - `normalize.json`, `jaro-winkler.json`: as before.
-- `ranking-scenarios.json`: run twice, through the internal pipeline and through the client, each as a search of
-  the scenario's `dataset` and `collection` (`RankingTests`).
+- `ranking-scenarios.json` (19 scenarios): run twice, through the internal pipeline and through the client, each
+  as a search of the scenario's `dataset` and `collection` (`RankingTests`). A scenario with `"overview": true`
+  is passed `overview: true` in the first run, and in the second the fake server answers `getTiles` with an
+  overview.
+- `match-tiers.json` (36 cases): `MatchTierTests` normalizes `query`, builds the place value from `place`, calls
+  the internal `matchTier` and compares the tier. Prefixes are taken over UTF-16 code units, not with
+  `String.hasPrefix`, which compares grapheme clusters; the case `क` against `कि` pins that, and a test shows
+  `hasPrefix` giving the other answer. `TierOrderingTests` checks tier first in each sort mode and the overview
+  drop.
 - `lenient-readers.json` (104 cases): `LenientReaderTests` runs all five readers and maps what each keeps into
   the fixture's JSON terms by encoding the Swift value, so a nil optional is a missing key. The `tilePayload`
   result is `{records, attribution?}`.
@@ -146,6 +154,29 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
 - Cache and copy behaviour (`CacheTests`, `ClientTests`, `ValueSemanticsTests`): warm and offline searches keep
   their attribution and hit collections, `getPlace(origin:)` answers with the lowest-URL source tile's attribution
   or the response's, and a tile with no attribution, or one that isn't a list, gives an empty list.
+
+## Name and location
+
+`SearchHit` and `PlaceRecord` have `name` and `location` (contract §5, §8, §9). In Swift they are computed
+properties over `place`, not stored fields, so the memberwise initializers and the synthesized or hand-written
+`Codable` forms are unchanged, and a value built by an app (or decoded from before these existed) has them too.
+`location` reads `place["locations"]` as the client does to rank and filter, on each access. `PlaceLocation`,
+`PlaceLocation.Point` and `PlaceLocation.Box` are `Sendable`, `Equatable` and `Codable` structs, as in the Kotlin
+port; `AccessorTests` covers hits, `getPlace` from the cache (with no request) and `getPlace` from the network.
+
+| Case | This port | Reference |
+|---|---|---|
+| `name` when `name` is absent or not a string | `nil` | `null` |
+| `location` | `PlaceLocation(point:bbox:)` with `nil` for what is missing; a value, so nothing to freeze | a frozen object, with a frozen point and bbox |
+| A box with `west > east` | kept as read | kept as read |
+
+## Match tier
+
+`fold` and `matchTier` (`Sources/Atgeo/Text.swift`) follow contract §7. The general category comes from
+`Unicode.Scalar.Properties.generalCategory`, so which scalars count as punctuation follows the Unicode version of
+the toolchain's standard library (on Apple platforms, of the OS), as `normalize` already does. A scalar the
+library's Unicode data does not yet know is not punctuation, which cannot arise in the fixture. Words are split on
+U+0020 by scalar and tokens are compared as UTF-16 arrays, never as `String`.
 
 ## Copies of what you're handed
 
