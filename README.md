@@ -22,7 +22,7 @@ for hit in result.places {
 }
 ```
 
-Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy (words that match exactly rank first), and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org has a limited dataset for now, mostly the east coast, so a search elsewhere may come back empty. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
+Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy (words that match exactly rank first), and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org covers the whole world. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
 
 ## Installation
 
