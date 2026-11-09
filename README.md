@@ -230,7 +230,7 @@ The budget counts each tile's response body, and the bodies are what the cache k
 
 Measured with `atgeo-bench`, which fills the default 50 MiB budget with synthetic tiles shaped like the OSM tiles places.atgeo.org serves (49.4 MiB of bodies), in a release build. On Linux the figure is RSS; on macOS it's the process's physical footprint, the number iOS and watchOS limit an app or extension by. Each is read after asking the allocator to return free pages:
 
-| | Linux (x86_64) | macOS 14 | macOS 26 |
+| | Linux (x86_64) | macOS 14 (October 2026) | macOS 26 |
 |---|---:|---:|---:|
 | Parsed records, as the cache held them until October 2026 | 202 MiB (4.1×) | 181 MiB (3.7×) | 210 MiB (4.3×) |
 | Bodies and the key index | 54 MiB (1.1×) | 48 MiB (1.0×) | 67 MiB (1.4×) |
@@ -244,9 +244,9 @@ There is no persistence; a new client starts cold. The default transport uses an
 
 ## Performance
 
-The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux, macOS 26 and macOS 14 runners, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor: a fetched tile as it arrives, with at most 8 fetches in flight, and a cached tile that isn't among the latest search's parsed tiles alongside them (see Caching, above).
+The client parses responses with its own JSON parser, about 270 lines that go straight from bytes to `JSONValue`. It reads an 870 KiB tile in 4 to 8 ms on CI's Linux and macOS 26 runners and, in October 2026, a macOS 14 one, where `JSONDecoder` took 95 to 165 ms and `JSONSerialization` 7 to 16. Node's `JSON.parse` takes about 3. Parsing runs off the actor: a fetched tile as it arrives, with at most 8 fetches in flight, and a cached tile that isn't among the latest search's parsed tiles alongside them (see Caching, above).
 
-To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`, and measures the tile cache's memory and a search over a warm region; pass it paths to time real tiles too. CI runs it on Linux, current macOS and macOS 14, and puts the table in each job's summary.
+To measure on your own machine, `swift run -c release atgeo-bench` times a synthetic tile against `JSONDecoder` and `JSONSerialization`, and measures the tile cache's memory and a search over a warm region; pass it paths to time real tiles too. CI runs it on Linux and current macOS, and puts the table in each job's summary. It no longer runs on a host with the pre-2024 Foundation: `swift run` can't run on a simulator, so the iOS 17 job only runs the tests.
 
 ## Development
 

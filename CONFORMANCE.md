@@ -77,7 +77,7 @@ whether Apple's URLSession would have read a `file:` tile, and with the check in
 | U+200B, U+2060, U+2064, U+FEFF, U+00AD or U+034F in the host | dropped and fetched (`a`, U+200B, `b.example` is `ab.example`) | dropped and fetched |
 | A `%` in the host (`https://h%41/x`) | a failed tile, `refused`: Foundation would send the escape as written | decoded and fetched (host `ha`) |
 | `{`, `}`, `"` or `` ` `` in the host | a failed tile, `refused`: `URL(string:)` returns nil on Linux | fetched, and DNS fails it |
-| A non-ASCII character in the authority that NFKC, which IDNA applies, maps to a delimiter, `%`, a bracket, whitespace or a control (`h：8080`, `localhost℀x`, `h％40x`, `h＃x`, `u＠h`, `u﹫h`: U+FF1A, U+2100, U+FF05, U+FF03, U+FF20, U+FE6B) | a failed tile, `refused`. Foundation would map it and send a host or port WHATWG never reads (on Linux, `localhosta/cx` and port 8080; macOS 14 reads host `localhosta` and path `/cx/y`; the macOS and iOS simulator on CI's macos-latest return nil). The URL Foundation would send must also pass the check again and parse to the same host and port | refused |
+| A non-ASCII character in the authority that NFKC, which IDNA applies, maps to a delimiter, `%`, a bracket, whitespace or a control (`h：8080`, `localhost℀x`, `h％40x`, `h＃x`, `u＠h`, `u﹫h`: U+FF1A, U+2100, U+FF05, U+FF03, U+FF20, U+FE6B) | a failed tile, `refused`. Foundation would map it and send a host or port WHATWG never reads (on Linux, `localhosta/cx` and port 8080; macOS 14, measured in October 2026, reads host `localhosta` and path `/cx/y`; the macOS and iOS simulator on CI's macos-latest return nil). The URL Foundation would send must also pass the check again and parse to the same host and port | refused |
 | A plain IDN host (`bücher.example`) | fetched in punycode (`xn--bcher-kva.example`) on Linux | punycode |
 | A forbidden host code point (`<`, `^`) | a failed tile, `refused`: `URL(string:)` returns nil on Linux | refused |
 | A shorthand or hex IPv4 host WHATWG rewrites (`http://0x7f.1/x`, `http://127.1/x`) | sent with the host as written; FoundationNetworking fails it with `URLError(.badURL)` (-1000) before resolving anything, a `transport` failure | rewritten to `127.0.0.1` and fetched |
@@ -128,7 +128,7 @@ leaves them open:
 
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode
 version differences between Foundation builds. None: all 41 cases, at the pinned commit, pass on every
-CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbreviations, `İ` and `ẞ`.
+CI platform (Linux, current macOS and the iOS 17 simulator), including the Final_Sigma abbreviations, `İ` and `ẞ`.
 
 `qualifies` (contract §17) has the same skew in the one place it can show: the platform's Unicode tables decide
 which scalars are Mc or Me and what NFC recomposes. An OS release behind the server's Unicode version can
