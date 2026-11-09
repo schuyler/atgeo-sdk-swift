@@ -384,4 +384,21 @@ private func cacheSetup() throws -> FakeServer {
         _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(tiles() - before == 3)
     }
+
+    // Contract §4.11: a tile list answered from cache sent nothing, but a tile fetched for the search did.
+    @Test func aCachedListWhoseTilesWereEvictedStillDisclosesTheGrid() async throws {
+        let server = try FakeServer(tilesets: [overture([
+            FakeTile(url: tileURL("a"), records: [record(place("a", "A", [point(37.772, -122.412)]))]),
+        ])])
+        // Smaller than any tile, so each is evicted as it is inserted; the tile list is kept.
+        let client = server.client(cacheBudgetBytes: 1)
+        _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let listRequests = server.getTilesRequests.count
+        let tiles = { server.requestStrings.filter { $0.hasPrefix("https://tiles.example/") }.count }
+        let before = tiles()
+        let result = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        #expect(server.getTilesRequests.count == listRequests)
+        #expect(tiles() - before == 1)
+        #expect(result.disclosed.region == 0.01)
+    }
 }

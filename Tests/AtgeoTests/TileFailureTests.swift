@@ -146,8 +146,8 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         task.cancel()
         switch await task.result {
         case .success(let r): Issue.record("expected an error, got a result with failures \(r.tileFailures)")
-        // The tile's own error, as in the reference: the body failed to parse after the search was cancelled.
-        case .failure(let error): #expect(!(error is CancellationError) && !(error is URLError), "\(error)")
+        // The transport ignored the cancel and returned 200; the search notices on its return (contract §11).
+        case .failure(let error): #expect(error is CancellationError, "\(error)")
         }
     }
 }
