@@ -59,16 +59,21 @@ final class GatedTransport: HTTPTransport, @unchecked Sendable {
     }
 }
 
-/// Opens `gate` after five seconds, so a regression fails the test instead of hanging it.
+/// Opens `gate` after two minutes, so a regression fails the test instead of hanging it. As in ConcurrencyTests the
+/// budget is generous: on the iOS simulator the whole suite starts at once, and a gate that opened before the caller
+/// saw its cancellation would turn a slow start into a different outcome.
 private func watchdog(_ gate: GatedTransport) -> Task<Void, Never> {
     Task {
-        try? await Task.sleep(nanoseconds: 5_000_000_000)
+        try? await Task.sleep(nanoseconds: 120_000_000_000)
         gate.open()
     }
 }
 
-private func eventually(_ condition: () -> Bool) async {
-    for _ in 0..<5000 where !condition() { try? await Task.sleep(nanoseconds: 1_000_000) }
+/// True once `condition` holds, false after the same two minutes.
+private func eventually(_ condition: () -> Bool) async -> Bool {
+    let deadline = Date().addingTimeInterval(120)
+    while !condition() && Date() < deadline { try? await Task.sleep(nanoseconds: 1_000_000) }
+    return condition()
 }
 
 @Suite("cancellation through a transport that ignores it") struct IgnoringTransport {
@@ -80,7 +85,10 @@ private func eventually(_ condition: () -> Bool) async {
         defer { dog.cancel(); gate.open() }
         let typing = try AtgeoClient(server: URL(string: server.server)!, transport: gate).autocompleteByKeyword(dataset: dataset)
         let first = Task { try await typing.searchByKeyword("Za") }
-        await eventually { gate.started == 1 }
+        let held = await eventually { gate.started == 1 }
+        // Cancelled first, so a failed require does not leave the call running.
+        if !held { first.cancel() }
+        try #require(held, "the first call never reached the transport")
         _ = try await typing.searchByKeyword("Zan")
         await #expect(throws: CancellationError.self) { _ = try await first.value }
         #expect(!gate.isOpen, "the call waited for the transport")
@@ -94,8 +102,10 @@ private func eventually(_ condition: () -> Bool) async {
         defer { dog.cancel(); gate.open() }
         let typing = try AtgeoClient(server: URL(string: server.server)!, transport: gate).autocompleteByKeyword(dataset: dataset)
         let call = Task { try await typing.searchByKeyword("Zan") }
-        await eventually { gate.started == 1 }
+        let held = await eventually { gate.started == 1 }
+        // Cancelled before the require, so a failed require does not leave the call running.
         call.cancel()
+        try #require(held, "the call never reached the transport")
         await #expect(throws: CancellationError.self) { _ = try await call.value }
         #expect(!gate.isOpen, "the call waited for the transport")
     }
@@ -108,8 +118,10 @@ private func eventually(_ condition: () -> Bool) async {
         defer { dog.cancel(); gate.open() }
         let client = AtgeoClient(server: URL(string: server.server)!, transport: gate)
         let call = Task { try await client.searchByKeyword(keyword: "Zan", dataset: dataset) }
-        await eventually { gate.started == 1 }
+        let held = await eventually { gate.started == 1 }
+        // Cancelled before the require, so a failed require does not leave the call running.
         call.cancel()
+        try #require(held, "the request never reached the transport")
         gate.open()
         await #expect(throws: CancellationError.self) { _ = try await call.value }
     }
@@ -122,8 +134,10 @@ private func eventually(_ condition: () -> Bool) async {
         defer { dog.cancel(); gate.open() }
         let client = AtgeoClient(server: URL(string: server.server)!, transport: gate)
         let call = Task { try await client.searchNearby(region: region, dataset: dataset, collection: "place") }
-        await eventually { gate.started == 1 }
+        let held = await eventually { gate.started == 1 }
+        // Cancelled before the require, so a failed require does not leave the call running.
         call.cancel()
+        try #require(held, "the request never reached the transport")
         gate.open()
         await #expect(throws: CancellationError.self) { _ = try await call.value }
     }
@@ -157,7 +171,9 @@ private func eventually(_ condition: () -> Bool) async {
         let hanging = HangingFirstTransport(server)
         let typing = try AtgeoClient(server: URL(string: server.server)!, transport: hanging).autocompleteByKeyword(dataset: dataset)
         let first = Task { try await typing.searchByKeyword("Za") }
-        await eventually { hanging.started == 1 }
+        let held = await eventually { hanging.started == 1 }
+        if !held { first.cancel() }
+        try #require(held, "the first call never reached the transport")
         let second = Task { () throws -> KeywordSearchResult in
             _ = withUnsafeCurrentTask { $0?.cancel() }
             return try await typing.searchByKeyword("z")
