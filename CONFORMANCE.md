@@ -4,10 +4,12 @@ Where this port's behaviour differs from the TypeScript reference at the margins
 leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode skew list spec §6 asks for.
 None of these cases arises from a compliant garganorn server.
 
-The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
-`fc5633103e5ef195c1f9e6e96213e33ce56058ad` (the port contract pinned to the squash merge of schuyler/atgeo-sdk-js#63:
-keyword search, the fallback, the autocompleter, `disclosed`, the 0.8 fuzzy threshold) and garganorn
-`59d21b117f4a01f9f459fc83c2624b53c6cf503a`. CI's `fixtures` job holds them to those pins byte for byte.
+The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: the fixtures and
+the lexicon copy in `test/lexicon` from atgeo-sdk-js `5ce94485bfc0ba1e2c91acdd9abcc6660c4fb6b7` (the squash merge of
+schuyler/atgeo-sdk-js#67), and those lexicons are garganorn `59d21b117f4a01f9f459fc83c2624b53c6cf503a`'s. That
+port contract carries keyword search, the fallback, the autocompleter and `disclosed` (#55, 97c776b), and
+`KeywordRequired` as no answer, no already-aborted request reaching the transport, and the tier-1-kept, 0.8 tier-2
+threshold (#63, 3d68e5e). CI's `fixtures` job holds the files to those pins byte for byte.
 
 ## JSON parsing
 
@@ -77,7 +79,7 @@ whether Apple's URLSession would have read a `file:` tile, and with the check in
 | U+200B, U+2060, U+2064, U+FEFF, U+00AD or U+034F in the host | dropped and fetched (`a`, U+200B, `b.example` is `ab.example`) | dropped and fetched |
 | A `%` in the host (`https://h%41/x`) | a failed tile, `refused`: Foundation would send the escape as written | decoded and fetched (host `ha`) |
 | `{`, `}`, `"` or `` ` `` in the host | a failed tile, `refused`: `URL(string:)` returns nil on Linux | fetched, and DNS fails it |
-| A non-ASCII character in the authority that NFKC, which IDNA applies, maps to a delimiter, `%`, a bracket, whitespace or a control (`h：8080`, `localhost℀x`, `h％40x`, `h＃x`, `u＠h`, `u﹫h`: U+FF1A, U+2100, U+FF05, U+FF03, U+FF20, U+FE6B) | a failed tile, `refused`. Foundation would map it and send a host or port WHATWG never reads (on Linux, `localhosta/cx` and port 8080; macOS 14 reads host `localhosta` and path `/cx/y`; the macOS and iOS simulator on CI's macos-latest return nil). The URL Foundation would send must also pass the check again and parse to the same host and port | refused |
+| A non-ASCII character in the authority that NFKC, which IDNA applies, maps to a delimiter, `%`, a bracket, whitespace or a control (`h：8080`, `localhost℀x`, `h％40x`, `h＃x`, `u＠h`, `u﹫h`: U+FF1A, U+2100, U+FF05, U+FF03, U+FF20, U+FE6B) | a failed tile, `refused`. Foundation would map it and send a host or port WHATWG never reads (on Linux, `localhosta/cx` and port 8080; macOS 14, measured in October 2026, reads host `localhosta` and path `/cx/y`; the macOS and iOS simulator on CI's macos-latest return nil). The URL Foundation would send must also pass the check again and parse to the same host and port | refused |
 | A plain IDN host (`bücher.example`) | fetched in punycode (`xn--bcher-kva.example`) on Linux | punycode |
 | A forbidden host code point (`<`, `^`) | a failed tile, `refused`: `URL(string:)` returns nil on Linux | refused |
 | A shorthand or hex IPv4 host WHATWG rewrites (`http://0x7f.1/x`, `http://127.1/x`) | sent with the host as written; FoundationNetworking fails it with `URLError(.badURL)` (-1000) before resolving anything, a `transport` failure | rewritten to `127.0.0.1` and fetched |
@@ -116,7 +118,9 @@ leaves them open:
   caches an unparsable body reaches it.
 - Decoding a `TileFailure` whose `kind` is not one of the four, as a later version might write, throws
   `DecodingError`, and so does decoding the `NearbySearchResult` holding it.
-- A cancelled search throws the in-flight tile's own error, as the reference does, rather than report failures.
+- A cancelled search throws, rather than report failures: `CancellationError` when the transport returned after the
+  cancel, since the search checks for cancellation after every `transport.get` (contract §11), and the transport's own
+  error when it threw.
 - Each failure of a search that returns is logged with `os.Logger` (subsystem `org.atgeo`, category `tiles`) at
   debug level on Apple platforms, in URL order, after the search has finished and just before it returns, kind
   and status public, URL and error description private. A search that throws, cancelled or not, logs nothing.
@@ -126,7 +130,12 @@ leaves them open:
 
 Cases of `fixtures/normalize.json` that fail on one platform and pass on another because of Unicode
 version differences between Foundation builds. None: all 41 cases, at the pinned commit, pass on every
-CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbreviations, `İ` and `ẞ`.
+CI platform (Linux, current macOS and the iOS 17 simulator), including the Final_Sigma abbreviations, `İ` and `ẞ`.
+
+`qualifies` (contract §17) has the same skew in the one place it can show: the platform's Unicode tables decide
+which scalars are Mc or Me and what NFC recomposes. An OS release behind the server's Unicode version can
+disagree with the server about a newly assigned character, in the direction §17 already describes. The cases of
+`qualifying-keywords.json` do not reach it.
 
 ## Fixtures and their runners
 
@@ -238,13 +247,16 @@ Swift spec. Where the contract leaves a choice, or Swift's types settle it:
 - `searchByKeyword`, the fallback's keyword request and the autocompleter's calls are not cached; nothing from the
   answer enters a cache.
 - A request whose task is already cancelled is never handed to the transport: `Task.checkCancellation()` runs
-  immediately before every `transport.get` (`fetchBody`, and the tile fetch), and throws `CancellationError`. A fully
-  cached `searchNearby` still completes though cancelled.
-- The autocompleter runs each call in a `Task` it cancels when the next call arrives. A superseded call throws
-  `CancellationError` whatever its task threw, and also when its task returned an answer after the supersession,
-  since the contract has a superseded call end with the supersession outcome. A caller whose task is already
-  cancelled when it calls gets `CancellationError` with no request, after the previous call has been superseded;
-  a caller that cancels mid-flight gets `CancellationError` or `URLError(.cancelled)`, whichever the request threw.
+  immediately before every `transport.get` (`fetchBody`, and the tile fetch), and throws `CancellationError`. It runs
+  again right after each returns, so a transport that ignores cancellation and answers 200 cannot turn a cancelled
+  call into a result. A fully cached `searchNearby` still completes though cancelled.
+- The autocompleter runs each call's work in a `Task`, and its caller awaits a continuation the autocompleter
+  holds. A newer call resumes that continuation with `CancellationError` at once and cancels the work, so a
+  superseded call throws `CancellationError` before a transport that ignores cancellation returns, whatever its work
+  would have thrown or returned. A caller that cancels mid-flight also gets `CancellationError` at once. A caller
+  whose task is already cancelled when it calls gets `CancellationError` with no request, after the previous call has
+  been superseded, unless the keyword cannot qualify: that call makes no request, so it resolves empty (contract §19,
+  as the reference does).
 - A failure of the keyword request in the fallback loses the nearby result, and the keyword may already have
   reached the server; no `disclosed` is attached to the error (contract §18, step 8).
 - The keyword is sent exactly as passed. It is percent-encoded like any parameter, with `+` as `%2B`.

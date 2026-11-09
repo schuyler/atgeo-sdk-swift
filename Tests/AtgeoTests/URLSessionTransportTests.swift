@@ -112,13 +112,19 @@ import Testing
 
     @Test func cancellingTheTaskAbortsAHeldRequest() async throws {
         let server = try Loopback { _ in .init(status: 200, body: Data("{}".utf8), hold: true) }
-        let transport = self.transport
+        // The default session gives up on a silent request after 60 seconds. On a loaded simulator the server can
+        // take longer than that to see the request, and the task would then end with a timeout, not a cancellation.
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 600
+        let transport = URLSessionTransport(session: URLSession(configuration: configuration))
         let task = Task { try await transport.get(server.url("/held")) }
-        #expect(await server.waitForHeldRequest())
+        let held = await server.waitForHeldRequest()
+        // Cancelled first, so a failed require does not leave the request running.
         task.cancel()
+        try #require(held, "the request never reached the server")
         // A watchdog: if cancellation did not abort the request, releasing it lets the task finish with a 200,
-        // and the expectation below fails instead of the test hanging.
-        let watchdog = Task.detached { try await Task.sleep(nanoseconds: 5_000_000_000); server.release() }
+        // and the expectation below fails instead of the test hanging. Two minutes, as in ConcurrencyTests.
+        let watchdog = Task.detached { try await Task.sleep(nanoseconds: 120_000_000_000); server.release() }
         let result = await task.result
         watchdog.cancel()
         server.release()

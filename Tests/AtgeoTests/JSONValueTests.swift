@@ -105,7 +105,7 @@ private func decode(_ text: String) throws -> JSONValue {
 
     @Test func sourceNamesBothCommits() throws {
         let source = String(decoding: try fixtureData("SOURCE"), as: UTF8.self)
-        #expect(source.contains("atgeo-sdk-js fc5633103e5ef195c1f9e6e96213e33ce56058ad"))
+        #expect(source.contains("atgeo-sdk-js 5ce94485bfc0ba1e2c91acdd9abcc6660c4fb6b7"))
         #expect(source.contains("garganorn 59d21b117f4a01f9f459fc83c2624b53c6cf503a"))
     }
 }
