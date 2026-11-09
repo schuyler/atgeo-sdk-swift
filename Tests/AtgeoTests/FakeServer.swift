@@ -131,10 +131,21 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
                     return xrpcError("InvalidRequest", problem)
                 }
                 let p = Dictionary(params, uniquingKeysWith: { a, _ in a })
+                // The server refuses a coordinate with more than two decimals; the client always sends exactly two, so
+                // any other form is the client's bug, which the fake reports rather than answers (contract §13).
+                if p["bbox"]!.split(separator: ",", omittingEmptySubsequences: false).contains(where: { $0.wholeMatch(of: /.*\.\d{3,}/) != nil }) {
+                    return xrpcError("BboxTooPrecise", "One or more bbox coordinates have more than 2 decimal places")
+                }
                 if p["bbox"]!.wholeMatch(of: /-?\d+\.\d\d,-?\d+\.\d\d,-?\d+\.\d\d,-?\d+\.\d\d/) == nil {
                     return xrpcError("InvalidRequest", "bbox \(p["bbox"]!) is not a snapped box")
                 }
                 return getTiles(dataset: p["dataset"]!, collection: p["collection"], bbox: p["bbox"]!)
+            case "org.atgeo.searchPlaces":
+                if let problem = Self.checkParams(params, required: ["dataset", "q"], optional: ["collection", "bbox"]) {
+                    return xrpcError("InvalidRequest", problem)
+                }
+                let p = Dictionary(params, uniquingKeysWith: { a, _ in a })
+                return searchPlaces(dataset: p["dataset"]!, collection: p["collection"], q: p["q"]!, bbox: p["bbox"])
             case "org.atgeo.getPlace":
                 if let problem = Self.checkParams(params, required: ["uri"], optional: []) { return xrpcError("InvalidRequest", problem) }
                 let uri = params[0].1
@@ -167,14 +178,24 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
         return HTTPResponse(status: 404, body: Data("Not found".utf8))
     }
 
-    private func getTiles(dataset: String, collection: String?, bbox: String) -> HTTPResponse {
+    /// The tilesets carrying the dataset (and collection), or the error answer; shared by getTiles and searchPlaces.
+    private func select(dataset: String, collection: String?) -> Result<[FakeTileset], FakeAnswer> {
         func carries(_ t: FakeTileset, _ matches: (JSONObject) -> Bool) -> Bool { t.collections.contains(where: matches) }
         let withDataset = tilesets.filter { carries($0) { $0["dataset"]?.stringValue == dataset } }
-        if withDataset.isEmpty { return xrpcError("DatasetNotFound", "Dataset \(dataset) not found") }
+        if withDataset.isEmpty { return .failure(FakeAnswer(xrpcError("DatasetNotFound", "Dataset \(dataset) not found"))) }
         let selected = withDataset.filter {
             carries($0) { c in c["dataset"]?.stringValue == dataset && (collection == nil || c["collection"]?.stringValue == collection) }
         }
-        if selected.isEmpty { return xrpcError("CollectionNotFound", "Collection \(collection ?? "") not found") }
+        if selected.isEmpty { return .failure(FakeAnswer(xrpcError("CollectionNotFound", "Collection \(collection ?? "") not found"))) }
+        return .success(selected)
+    }
+
+    private func getTiles(dataset: String, collection: String?, bbox: String) -> HTTPResponse {
+        let selected: [FakeTileset]
+        switch select(dataset: dataset, collection: collection) {
+        case .success(let tilesets): selected = tilesets
+        case .failure(let refusal): return refusal.response
+        }
         let urls = selected.flatMap { $0.tiles.map(\.url) }.sorted(by: ordinalLess)
         switch tilesFor?(bbox) ?? .tiles(urls) {
         case .tiles(let tiles): return answer(["tiles": .array(tiles.map(JSONValue.string))])
@@ -186,23 +207,130 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
     private func getPlace(_ origin: String) -> HTTPResponse {
         let parts = origin.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 4 else { return xrpcError("PlaceNotFound", "Place \(origin) not found") }
-        let (dataset, collection, rest) = (parts[2], parts[3], parts.dropFirst(4).joined(separator: ":"))
+        let (dataset, collection) = (parts[2], parts[3])
         for tileset in tilesets {
             guard tileset.collections.contains(where: { $0["dataset"]?.stringValue == dataset && $0["collection"]?.stringValue == collection }) else { continue }
             for tile in tileset.tiles {
                 if let found = tile.records.first(where: { $0["value"]?["origin"]?.stringValue.map { ordinalEqual($0, origin) } ?? false }) {
-                    // The wire shape of garganorn#15: the origin echoed as `uri`, the web address as `url`, the record
-                    // as `value`, and the attribution of the place's tileset, which every tile of it carries too.
-                    var body: JSONObject = [
-                        "uri": .string(origin), "url": .string("\(server)/\(dataset)/\(collection)/\(rest)"),
-                        "value": found["value"]!, "attribution": .array(Self.attributionList(tileset)),
-                    ]
-                    if let importance = found["importance"] { body["importance"] = importance }
-                    return answer(body)
+                    return answer(placeView(tileset, found, origin))
                 }
             }
         }
         return xrpcError("PlaceNotFound", "Place \(origin) not found")
+    }
+
+    /// The wire shape of garganorn#15, which getPlace answers with and searchPlaces lists: the origin echoed as
+    /// `uri`, the web address as `url`, the record as `value`, and the attribution of the place's tileset, which
+    /// every tile of it carries too.
+    private func placeView(_ tileset: FakeTileset, _ found: JSONValue, _ origin: String) -> JSONObject {
+        let parts = origin.split(separator: ":", omittingEmptySubsequences: false).map(String.init)
+        let rest = parts.dropFirst(4).joined(separator: ":")
+        var body: JSONObject = [
+            "uri": .string(origin), "url": .string("\(server)/\(parts.count > 2 ? parts[2] : "")/\(parts.count > 3 ? parts[3] : "")/\(rest)"),
+            "value": found["value"]!, "attribution": .array(Self.attributionList(tileset)),
+        ]
+        if let importance = found["importance"] { body["importance"] = importance }
+        return body
+    }
+
+    /// The server's name_tokens (search_index.sql): lowercase, accents (all marks) stripped, apostrophes dropped,
+    /// punctuation runs to spaces, final sigma folded, split on whitespace.
+    static func nameTokens(_ s: String) -> [String] {
+        var stripped = String.UnicodeScalarView()
+        for u in s.lowercased().decomposedStringWithCanonicalMapping.unicodeScalars {
+            switch u.properties.generalCategory {
+            case .nonspacingMark, .spacingMark, .enclosingMark: continue
+            default: stripped.append(u)
+            }
+        }
+        var tokens: [String] = []
+        var current = String.UnicodeScalarView()
+        func flush() {
+            if !current.isEmpty { tokens.append(String(current)); current = String.UnicodeScalarView() }
+        }
+        for u in String(stripped).precomposedStringWithCanonicalMapping.unicodeScalars {
+            if u.value == 0x27 || u.value == 0x2019 || u.value == 0x02BC { continue }
+            switch u.properties.generalCategory {
+            case .connectorPunctuation, .dashPunctuation, .openPunctuation, .closePunctuation,
+                 .initialPunctuation, .finalPunctuation, .otherPunctuation,
+                 .spaceSeparator, .lineSeparator, .paragraphSeparator:
+                flush()
+            default:
+                if u.properties.isWhitespace || u.value == 0xFEFF { flush() } else { current.append(u.value == 0x3C2 ? "\u{03C3}" : u) }
+            }
+        }
+        flush()
+        return tokens
+    }
+
+    /// The bbox rules of the real server, in its order: the precision check, then the box (contract §13, §16).
+    private func bboxProblem(_ bbox: String) -> HTTPResponse? {
+        let parts = bbox.split(separator: ",", omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 4, parts.contains(where: { p in
+            p.lowercased().contains("e") || p.firstIndex(of: ".").map { p.distance(from: $0, to: p.endIndex) - 1 > 0 } ?? false
+        }) {
+            return xrpcError("BboxTooPrecise", "bbox coordinate has more than 0 decimal places; snap to 1° grid")
+        }
+        func invalid(_ message: String) -> HTTPResponse { xrpcError("InvalidBbox", message) }
+        let numbers = parts.map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count == 4, numbers.allSatisfy({ $0.wholeMatch(of: /[+-]?(\d+\.?\d*|\.\d+)/) != nil }) else {
+            return invalid("bbox must be four comma-separated numbers")
+        }
+        let v = numbers.map { Double($0) ?? .nan }
+        let (west, south, east, north) = (v[0], v[1], v[2], v[3])
+        if ![west, east].allSatisfy({ abs($0) <= 180 }) || ![south, north].allSatisfy({ abs($0) <= 90 }) { return invalid("bbox out of range") }
+        if south >= north { return invalid("bbox requires south < north") }
+        if west >= east && !(west > 0 && east < 0 && west - east < 360) { return invalid("bbox requires west < east") }
+        return nil
+    }
+
+    /// `org.atgeo.searchPlaces`, by the server's rules: the places whose names each of the keyword's first 12
+    /// distinct words begins a word of, most important first, then by origin; with a `collection` only that
+    /// collection's records. The region is validated and not applied.
+    private func searchPlaces(dataset: String, collection: String?, q: String, bbox: String?) -> HTTPResponse {
+        if let bbox, let problem = bboxProblem(bbox) { return problem }
+        let selected: [FakeTileset]
+        switch select(dataset: dataset, collection: collection) {
+        case .success(let tilesets): selected = tilesets
+        case .failure(let refusal): return refusal.response
+        }
+        var words: [String] = []
+        for token in Self.nameTokens(q) where !words.contains(where: { ordinalEqual($0, token) }) { words.append(token) }
+        words = Array(words.prefix(12))
+        if !words.contains(where: { $0.unicodeScalars.count >= 2 }) {
+            return xrpcError("KeywordRequired", "q needs a word of two or more characters")
+        }
+        let prefix = collection.map { "urn:atgeo:\(dataset):\($0):" }
+        var matches: [(origin: String, tileset: FakeTileset, found: JSONValue)] = []
+        var seen = Set<OrdinalKey>()
+        for tileset in selected {
+            for tile in tileset.tiles {
+                for found in tile.records {
+                    guard let origin = found["value"]?["origin"]?.stringValue else { continue }
+                    if let prefix, !origin.utf16.starts(with: prefix.utf16) { continue }
+                    if seen.contains(OrdinalKey(origin)) { continue }
+                    var names: [String] = []
+                    if let name = found["value"]?["name"]?.stringValue { names.append(name) }
+                    for variant in found["value"]?["variants"]?.arrayValue ?? [] {
+                        if let name = variant["name"]?.stringValue { names.append(name) }
+                    }
+                    let matched = names.contains { name in
+                        let tokens = Self.nameTokens(name)
+                        return words.allSatisfy { w in tokens.contains { $0.utf16.starts(with: w.utf16) } }
+                    }
+                    if matched {
+                        seen.insert(OrdinalKey(origin))
+                        matches.append((origin, tileset, found))
+                    }
+                }
+            }
+        }
+        matches.sort { a, b in
+            let (x, y) = (int64(a.found["importance"]) ?? 0, int64(b.found["importance"]) ?? 0)
+            if x != y { return x > y }
+            return ordinalLess(a.origin, b.origin)
+        }
+        return answer(["places": .array(matches.map { .object(placeView($0.tileset, $0.found, $0.origin)) })])
     }
 
     private func describeService() -> JSONObject {
@@ -249,6 +377,12 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
 
     private func json(_ body: JSONObject, status: Int = 200) -> HTTPResponse {
         HTTPResponse(status: status, body: try! JSONEncoder().encode(JSONValue.object(body)))
+    }
+
+    /// An error answer, as the `Failure` of `select`, which must be an `Error`.
+    private struct FakeAnswer: Error {
+        var response: HTTPResponse
+        init(_ response: HTTPResponse) { self.response = response }
     }
 
     private func xrpcError(_ code: String, _ message: String, status: Int = 400) -> HTTPResponse {
@@ -319,6 +453,13 @@ final class FakeServer: HTTPTransport, @unchecked Sendable {
         if let tiles = body["tiles"] {
             guard let list = tiles.arrayValue, list.allSatisfy({ $0.stringValue != nil }) else { return "tiles must be an array of strings" }
             if let overview = body["overview"], overview.boolValue == nil { return "overview must be a boolean" }
+            return nil
+        }
+        if let places = body["places"] {
+            guard let list = places.arrayValue else { return "searchPlaces places must be an array" }
+            for p in list {
+                if let problem = problemWithResponse(p.objectValue ?? [:]) { return "searchPlaces place: \(problem)" }
+            }
             return nil
         }
         if body["value"] != nil {

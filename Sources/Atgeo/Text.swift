@@ -124,7 +124,10 @@ func jaroWinkler(_ a: String, _ b: String) -> Double {
     jaroWinkler(Array(a.utf16), Array(b.utf16))
 }
 
+/// Contract §7: a word match (tier 1) is kept at any score; a fuzzy-only match (tier 2) needs `fuzzyThreshold`; a
+/// query whose words all fold away has no tokens to match, so it uses `scoreThreshold`.
 let scoreThreshold = 0.6
+let fuzzyThreshold = 0.8
 private let maxQueryTokens = 12
 
 /// Splits on U+0020 by code unit, as JavaScript's `split(" ")` does. `String.split` would not split a
@@ -196,7 +199,7 @@ func ordinalLess(_ a: String, _ b: String) -> Bool {
 /// Apostrophes vanish, other punctuation separates words: "mcdonalds" meets "McDonald's", "st louis" meets
 /// "St. Louis". Scalars of general category P* (Pc Pd Ps Pe Pi Pf Po) separate; symbols (S*) do not. U+0027,
 /// U+2019 and U+02BC are removed. The tokens are returned as UTF-16, the units a prefix is taken in.
-private func fold(_ s: some Sequence<Unicode.Scalar>) -> [[UInt16]] {
+func fold(_ s: some Sequence<Unicode.Scalar>) -> [[UInt16]] {
     var tokens: [[UInt16]] = []
     var current: [UInt16] = []
     func flush() {
@@ -242,4 +245,29 @@ func matchTier(_ tokens: [[UInt16]], names: [[UInt16]]) -> Int {
 /// `matchTier` for a normalized query and a place value, as `fixtures/match-tiers.json` states it.
 func matchTier(_ query: String, _ place: JSONObject) -> Int {
     matchTier(queryTokens(query), names: normalizedNames(place))
+}
+
+/// Whether the server's keyword search would accept the keyword (contract §17): after `normalize`, folding, dropping
+/// spacing (Mc) and enclosing (Me) marks, which `normalize` leaves, and recomposing with NFC, one of the first 12
+/// distinct words has two code points. Not match tier's tokenization, which takes 12 words before folding and
+/// does not deduplicate. The length is in Unicode scalars, never `String.count`'s grapheme clusters, and never UTF-16
+/// units.
+func qualifies(_ keyword: String) -> Bool {
+    var seen = Set<OrdinalKey>()
+    var distinct: [String] = []
+    for word in words(Array(normalize(keyword).utf16)) {
+        for token in fold(String(decoding: word, as: UTF16.self).unicodeScalars) {
+            var kept = String.UnicodeScalarView()
+            for u in String(decoding: token, as: UTF16.self).unicodeScalars {
+                switch u.properties.generalCategory {
+                case .spacingMark, .enclosingMark: continue
+                default: kept.append(u)
+                }
+            }
+            if kept.isEmpty { continue }
+            let composed = String(kept).precomposedStringWithCanonicalMapping
+            if seen.insert(OrdinalKey(composed)).inserted { distinct.append(composed) }
+        }
+    }
+    return distinct.prefix(maxQueryTokens).contains { $0.unicodeScalars.count >= 2 }
 }

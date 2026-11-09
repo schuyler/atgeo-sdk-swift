@@ -18,7 +18,7 @@ private func round3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 private func compare<T: Comparable>(_ x: T, _ y: T) -> Int { x < y ? -1 : x > y ? 1 : 0 }
 
 private struct Ranked {
-    var hit: SearchHit
+    var hit: NearbyHit
     /// 1 or 2 with text, nil without (contract §7).
     var tier: Int?
     var specificity: Double
@@ -45,27 +45,31 @@ private let byOrigin: Comparator = { a, b in
     }
 }
 
-/// Builds the hits for records that passed the region filter, drops those scoring below the threshold, and, with
-/// text on an `overview` answer, those that match only fuzzily (tier 2), and sorts them. `query` is already
-/// normalized; "" means no text.
-func rank(_ records: [TileRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [SearchHit] {
+/// Builds the hits for records that passed the region filter, drops those below the score threshold of their tier
+/// (contract §7), and, with text on an `overview` answer, those that match only fuzzily (tier 2), and sorts them.
+/// `query` is already normalized; "" means no text.
+func rank(_ records: [TileRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [NearbyHit] {
     rank(records.map(PreparedRecord.init), region: region, query: query, sort: sort, overview: overview)
 }
 
-func rank(_ records: [PreparedRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [SearchHit] {
+func rank(_ records: [PreparedRecord], region: Region, query: String, sort: SortMode, overview: Bool = false) -> [NearbyHit] {
     let middle = center(region)
     let tokens = query.isEmpty ? [] : queryTokens(query)
+    // A query with text but no tokens after folding (such as "&"): every record is tier 1 for it.
+    let wordless = !query.isEmpty && tokens.isEmpty
     var ranked: [Ranked] = []
     for prepared in records {
         let record = prepared.record
         let score = query.isEmpty ? nil : textScore(query: query, names: prepared.names)
-        if let score, score < scoreThreshold { continue }
         let tier = score == nil ? nil : matchTier(tokens, names: prepared.names)
+        // Contract §7: a word match (tier 1) is kept at any score, a fuzzy-only match (tier 2) needs 0.8, and a
+        // query whose words all fold away, for which every record is tier 1, needs 0.6.
+        if let score, score < (wordless ? scoreThreshold : tier == 2 ? fuzzyThreshold : 0) { continue }
         if tier == 2 && overview { continue }
         let locations = locate(record.value)
         // The region filter already required a location, so there is always a distance.
         guard let distance = distanceTo(locations, lat: middle.lat, lon: middle.lon) else { continue }
-        let hit = SearchHit(
+        let hit = NearbyHit(
             origin: recordKey(record), place: record.value, importance: record.importance,
             distance: distance, score: score, collection: hitCollection(record, attribution: prepared.attribution))
         ranked.append(Ranked(hit: hit, tier: tier, specificity: specificity(locations), index: ranked.count))

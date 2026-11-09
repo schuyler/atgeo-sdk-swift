@@ -81,3 +81,34 @@ private func cases() throws -> [MatchTierCase] {
         }
     }
 }
+
+/// Contract §7: tier 1 is kept at any score, tier 2 needs 0.8, and a query whose words all fold away needs 0.6.
+@Suite struct ScoreThresholds {
+    private let region = Region.circle(lat: 0, lon: 0, radius: 5000)
+
+    private func kept(_ names: [String], query: String, overview: Bool = false) -> [String] {
+        let records = names.enumerated().map { i, name in TileRecord(value: place("r\(i)", name, [point(0, 0.001)])) }
+        return rank(records, region: region, query: normalize(query), sort: .fused, overview: overview).compactMap { $0.place["name"]?.stringValue }
+    }
+
+    @Test func aWordMatchIsKeptWhateverItsScore() {
+        let name = "Bar & Grill at the Old Quarry"
+        #expect(textScore(query: "qu", value: ["name": .string(name)]) < 0.6)
+        #expect(kept([name], query: "qu") == [name])
+    }
+
+    @Test func aFuzzyMatchNeedsPointEight() {
+        #expect(textScore(query: "xqzjvkwpfhgy", value: ["name": .string("Qwizify")]) < 0.8)
+        #expect(kept(["Qwizify"], query: "xqzjvkwpfhgy").isEmpty)
+        // One typo scores above 0.8 and is kept.
+        #expect(kept(["Cafe"], query: "cfae") == ["Cafe"])
+    }
+
+    @Test func aQueryWhoseWordsAllFoldAwayKeepsOnlyScoresOfPointSix() {
+        #expect(kept(["&", "Anything"], query: "&") == ["&"])
+    }
+
+    @Test func overviewStillDropsFuzzyMatchesThatClearTheThreshold() {
+        #expect(kept(["Cafe"], query: "cfae", overview: true).isEmpty)
+    }
+}

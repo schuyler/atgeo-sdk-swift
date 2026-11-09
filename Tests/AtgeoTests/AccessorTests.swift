@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Atgeo
 
-// Port of test/accessors.test.ts: `name` and `location` on SearchHit and PlaceRecord (contract §5, §8, §9).
+// Port of test/accessors.test.ts: `name` and `location` on NearbyHit and PlaceRecord (contract §5, §8, §9).
 
 private let tile = tileURL("a")
 private let region = Region.bbox(west: -179, south: -80, east: 179, north: 80)
@@ -40,7 +40,7 @@ private struct Seen: Equatable {
 private func seen(_ value: JSONObject) async throws -> [Seen] {
     let (transport, fake) = try make(value)
     let warm = AtgeoClient(server: URL(string: fake.server)!, transport: transport)
-    let hit = try #require(try await warm.searchPlaces(region: region, dataset: "overturemaps.org").places.first)
+    let hit = try #require(try await warm.searchNearby(region: region, dataset: "overturemaps.org").places.first)
     let before = fake.requests.count
     let cached = try await warm.getPlace(origin: placeOrigin("x"))
     // The warm getPlace is answered from the cache: no request of any kind.
@@ -130,7 +130,7 @@ private func bx(_ south: Double, _ west: Double, _ north: Double, _ east: Double
     }
 
     @Test func aPlaceWithNoUsableLocationHasAnEmptyOne() {
-        let hit = SearchHit(origin: nil, place: ["locations": .array([geo(.string("x"), .string("y"))])], importance: nil, distance: 0, score: nil)
+        let hit = NearbyHit(origin: nil, place: ["locations": .array([geo(.string("x"), .string("y"))])], importance: nil, distance: 0, score: nil)
         #expect(hit.location == PlaceLocation(point: nil, bbox: nil))
     }
 }
@@ -139,7 +139,7 @@ private func bx(_ south: Double, _ west: Double, _ north: Double, _ east: Double
     // Computed properties: memberwise inits and Codable are unchanged, and the accessors follow `place`.
     @Test func followPlaceAndLeaveCodableAlone() throws {
         let value = place("x", "Zanzibar", [point(10, 20), bboxLocation(north: 12, south: 8, east: 22, west: 18)])
-        let hit = SearchHit(origin: "o", place: value, importance: nil, distance: 1, score: nil)
+        let hit = NearbyHit(origin: "o", place: value, importance: nil, distance: 1, score: nil)
         let record = PlaceRecord(origin: "o", place: value, importance: nil)
         for (name, location) in [(hit.name, hit.location), (record.name, record.location)] {
             #expect(name == "Zanzibar")
@@ -147,7 +147,7 @@ private func bx(_ south: Double, _ west: Double, _ north: Double, _ east: Double
         }
         let json = try #require(String(data: JSONEncoder().encode(hit), encoding: .utf8))
         #expect(!json.contains("\"location\"") && !json.contains("\"bbox\""))
-        #expect(try JSONDecoder().decode(SearchHit.self, from: JSONEncoder().encode(hit)) == hit)
+        #expect(try JSONDecoder().decode(NearbyHit.self, from: JSONEncoder().encode(hit)) == hit)
         #expect(try JSONDecoder().decode(PlaceRecord.self, from: JSONEncoder().encode(record)) == record)
     }
 

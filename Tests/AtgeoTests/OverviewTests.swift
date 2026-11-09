@@ -24,29 +24,29 @@ private func body(_ tiles: [String], overview: Bool? = nil) -> TilesForAnswer {
 @Suite("overview answers") struct OverviewAnswers {
     @Test("flags an overview answer whose tiles all load as overview and complete")
     func overviewComplete() async throws {
-        let result = try await setup { _ in body([east, west], overview: true) }.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await setup { _ in body([east, west], overview: true) }.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.overview)
         #expect(result.complete)
     }
 
     @Test("does not flag a regular answer with a failed tile")
     func regularWithFailure() async throws {
-        let result = try await setup(failTiles: [west]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await setup(failTiles: [west]).client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(!result.overview)
         #expect(!result.complete)
     }
 
     @Test("reads an answer without the key as regular")
     func noKey() async throws {
-        #expect(try await setup { _ in body([east, west]) }.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place").overview == false)
+        #expect(try await setup { _ in body([east, west]) }.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place").overview == false)
     }
 
     @Test("keeps the flag when the tile-list cache answers")
     func cached() async throws {
         let server = try setup { _ in body([east, west], overview: true) }
         let client = server.client()
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
-        let second = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let second = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.getTilesRequests.count == 1)
         #expect(second.overview)
     }
@@ -54,6 +54,6 @@ private func body(_ tiles: [String], overview: Bool? = nil) -> TilesForAnswer {
     @Test("flags a split antimeridian search when only one half is overview")
     func oneHalf() async throws {
         let server = try setup { bbox in bbox.hasPrefix("170") ? body([east], overview: true) : body([west]) }
-        #expect(try await server.client().searchPlaces(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place").overview)
+        #expect(try await server.client().searchNearby(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place").overview)
     }
 }

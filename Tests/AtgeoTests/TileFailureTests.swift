@@ -45,14 +45,14 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
 @Suite("tile failures") struct TileFailureTests {
     @Test("are empty for a search where every tile loads")
     func emptyOnSuccess() async throws {
-        let result = try await FakeServer(tilesets: [overture([tile("a"), tile("b")])]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await FakeServer(tilesets: [overture([tile("a"), tile("b")])]).client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures.isEmpty && result.complete && result.tiles == .init(fetched: 2, failed: 0))
     }
 
     @Test("report a refused URL without a request")
     func refused() async throws {
         let server = try FakeServer(tilesFor: { _ in .tiles(["file:///etc/hostname"]) })
-        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures == [TileFailure(url: "file:///etc/hostname", kind: .refused, error: nil)])
         #expect((result.tileFailures.first?.error as? URLError)?.code == .unsupportedURL)
         #expect(server.requests.count == 1)
@@ -61,7 +61,7 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
     @Test("report a non-2xx answer with its status and AtgeoError")
     func status() async throws {
         let server = try FakeServer(tilesets: [overture([tile("a"), tile("b")])], failTiles: [tileURL("b")])
-        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures == [TileFailure(url: tileURL("b"), kind: .status, status: 500, error: nil)])
         let error = try #require(result.tileFailures.first?.error as? AtgeoError)
         #expect(error == AtgeoError(code: "HttpError", message: "HTTP 500", status: 500))
@@ -75,7 +75,7 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         let server = try FakeServer(
             tilesFor: { _ in .tiles([tileURL("a")]) },
             rawBodies: [tileURL("a"): HTTPResponse(status: 200, body: Data(body.utf8))])
-        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures == [TileFailure(url: tileURL("a"), kind: .decode, error: nil)])
         #expect(result.tileFailures.first?.error != nil)
     }
@@ -84,13 +84,13 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
     func transport() async throws {
         let server = try FakeServer(tilesets: [overture([tile("a"), tile("b")])])
         let lost = try await client(ThrowingTransport(base: server, failing: [tileURL("a")], error: URLError(.networkConnectionLost)))
-            .searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+            .searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(lost.tileFailures == [TileFailure(url: tileURL("a"), kind: .transport, error: nil)])
         #expect((lost.tileFailures.first?.error as? URLError)?.code == .networkConnectionLost)
 
         // An app's transport may throw an AtgeoError of its own; it is still where the failure arose that counts.
         let thrown = AtgeoError(code: "Proxy", message: "blocked", status: 403)
-        let app = try await client(ThrowingTransport(base: server, failing: [tileURL("a")], error: thrown)).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let app = try await client(ThrowingTransport(base: server, failing: [tileURL("a")], error: thrown)).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(app.tileFailures == [TileFailure(url: tileURL("a"), kind: .transport, error: nil)])
         #expect(app.tileFailures.first?.status == nil)
         #expect(app.tileFailures.first?.error as? AtgeoError == thrown)
@@ -101,7 +101,7 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         let server = try FakeServer(tilesFor: { _ in .tiles([tileURL("a")]) })
         let client = server.client()
         await client.cacheUnparsedTile(tileURL("a"), body: Data("not json".utf8))
-        let result = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures == [TileFailure(url: tileURL("a"), kind: .decode, error: nil)])
         #expect(result.tileFailures.first?.error != nil)
         #expect(result.tiles == .init(fetched: 0, failed: 1))
@@ -120,7 +120,7 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         let delays: [String: TimeInterval] = [tileURL("a"): 0.3, tileURL("b"): 0.2, tileURL("d"): 0.1]
         let flaky = ThrowingTransport(base: server, failing: [tileURL("a")], error: URLError(.timedOut))
         let transport = DelayingTransport(flaky, delay: { delays[$0.absoluteString] })
-        let result = try await client(transport).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await client(transport).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures == [
             TileFailure(url: refused, kind: .refused, error: nil),
             TileFailure(url: tileURL("a"), kind: .transport, error: nil),
@@ -136,7 +136,7 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
     func cancelled() async throws {
         let server = try FakeServer(tilesets: [overture([tile("a")])])
         let client = client(HoldThenGarbage(base: server, held: tileURL("a")))
-        let task = Task { try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
+        let task = Task { try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
         let deadline = Date().addingTimeInterval(30)
         while !server.requestStrings.contains(tileURL("a")) && Date() < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
         task.cancel()
@@ -171,7 +171,7 @@ private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient
         let delays: [String: TimeInterval] = [tileURL("a"): 0.2]
         let sink = LogSink()
         let result = try await client(DelayingTransport(server, delay: { delays[$0.absoluteString] }), log: sink)
-            .searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+            .searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures.count == 3)
         #expect(sink.logged == result.tileFailures)
     }
@@ -179,7 +179,7 @@ private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient
     @Test("logs nothing for a search that succeeds")
     func nothingOnSuccess() async throws {
         let sink = LogSink()
-        _ = try await client(try FakeServer(tilesets: [overture([tile("a")])]), log: sink).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client(try FakeServer(tilesets: [overture([tile("a")])]), log: sink).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(sink.logged.isEmpty)
     }
 
@@ -188,7 +188,7 @@ private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient
         let server = try FakeServer(tilesets: [overture([tile("a"), tile("b")])], failTiles: [tileURL("a")])
         let sink = LogSink()
         let client = client(HoldThenGarbage(base: server, held: tileURL("b")), log: sink)
-        let task = Task { try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
+        let task = Task { try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
         let deadline = Date().addingTimeInterval(30)
         while !(server.requestStrings.contains(tileURL("a")) && server.requestStrings.contains(tileURL("b"))) && Date() < deadline {
             try await Task.sleep(nanoseconds: 1_000_000)
@@ -218,13 +218,13 @@ private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient
             TileFailure(url: "https://t/a", kind: .status, status: 503, error: AtgeoError(code: "HttpError", message: "HTTP 503", status: 503)),
             TileFailure(url: "https://t/b", kind: .transport, error: URLError(.timedOut)),
         ]
-        let result = SearchResult(places: [], complete: false, overview: false, tiles: .init(fetched: 0, failed: 2), tileFailures: failures)
+        let result = NearbySearchResult(places: [], complete: false, overview: false, tiles: .init(fetched: 0, failed: 2), tileFailures: failures)
         let data = try JSONEncoder().encode(result)
         let json = try #require(try JSONSerialization.jsonObject(with: data) as? [String: Any])
         let encoded = try #require(json["tileFailures"] as? [[String: Any]])
         #expect(encoded.map { $0.keys.sorted() } == [["kind", "status", "url"], ["kind", "url"]])
         #expect(encoded.first?["kind"] as? String == "status")
-        let decoded = try JSONDecoder().decode(SearchResult.self, from: data)
+        let decoded = try JSONDecoder().decode(NearbySearchResult.self, from: data)
         #expect(decoded == result)
         #expect(decoded.tileFailures.allSatisfy { $0.error == nil })
     }
@@ -232,8 +232,8 @@ private func client(_ transport: any HTTPTransport, log: LogSink) -> AtgeoClient
     @Test("a result encoded before tileFailures existed decodes with none")
     func decodesOlderResults() throws {
         let old = #"{"places":[],"complete":false,"overview":true,"tiles":{"fetched":1,"failed":1}}"#
-        let decoded = try JSONDecoder().decode(SearchResult.self, from: Data(old.utf8))
-        #expect(decoded == SearchResult(places: [], complete: false, overview: true, tiles: .init(fetched: 1, failed: 1)))
+        let decoded = try JSONDecoder().decode(NearbySearchResult.self, from: Data(old.utf8))
+        #expect(decoded == NearbySearchResult(places: [], complete: false, overview: true, tiles: .init(fetched: 1, failed: 1)))
         #expect(decoded.tileFailures.isEmpty)
     }
 }

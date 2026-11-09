@@ -111,7 +111,7 @@ import Testing
 
 private func emitted(_ region: Region) async throws -> [String] {
     let server = try FakeServer()
-    _ = try await server.client().searchPlaces(region: region, dataset: "overturemaps.org", collection: "place")
+    _ = try await server.client().searchNearby(region: region, dataset: "overturemaps.org", collection: "place")
     return server.getTilesRequests.map { param($0, "bbox") ?? "" }
 }
 
@@ -302,7 +302,7 @@ private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map 
                 FakeTile(url: east, records: [record(place("e", "East", [point(15, -175)]))]),
             ])],
             tilesFor: { bbox in .tiles(bbox.hasPrefix("170") ? [west] : [east]) })
-        let result = try await server.client().searchPlaces(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place")
         #expect(result.places.compactMap(\.origin).sorted() == [placeOrigin("e"), placeOrigin("w")])
         #expect(result.complete)
     }
@@ -333,13 +333,13 @@ private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map 
         let server = try FakeServer()
         let expected: AtgeoArgumentError
         if case .bbox = region { expected = .invalidRegion("invalid bbox") } else { expected = .invalidRegion("invalid circle") }
-        await #expect(throws: expected) { _ = try await server.client().searchPlaces(region: region, dataset: "overturemaps.org", collection: "place") }
+        await #expect(throws: expected) { _ = try await server.client().searchNearby(region: region, dataset: "overturemaps.org", collection: "place") }
         #expect(server.requests.isEmpty)
     }
 
     @Test("accepts west > east")
     func acceptsCrossing() async throws {
-        _ = try await FakeServer().client().searchPlaces(region: .bbox(west: 170, south: 0, east: -170, north: 1), dataset: "overturemaps.org", collection: "place")
+        _ = try await FakeServer().client().searchNearby(region: .bbox(west: 170, south: 0, east: -170, north: 1), dataset: "overturemaps.org", collection: "place")
     }
 
     @Test("throws for similarity sort without text, before any request")
@@ -347,7 +347,7 @@ private func parse(_ bbox: String) -> [Double] { bbox.split(separator: ",").map 
         let server = try FakeServer()
         for text in [nil, "", "   ", "\u{301}"] as [String?] {
             await #expect(throws: AtgeoArgumentError.similarityRequiresText) {
-                _ = try await server.client().searchPlaces(region: .bbox(west: 0, south: 0, east: 1, north: 1), dataset: "overturemaps.org", text: text, collection: "place", sort: .similarity)
+                _ = try await server.client().searchNearby(region: .bbox(west: 0, south: 0, east: 1, north: 1), dataset: "overturemaps.org", text: text, collection: "place", sort: .similarity)
             }
         }
         #expect(server.requests.isEmpty)

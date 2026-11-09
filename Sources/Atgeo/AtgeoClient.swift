@@ -1,10 +1,12 @@
 import Foundation
 
-/// A client for the atgeo gazetteer that searches places without telling the server what you searched for.
+/// A client for the atgeo gazetteer that searches nearby places without telling the server what you searched for,
+/// and says so in the method name when a search might.
 ///
-/// A search sends only a coarse, snapped box, the dataset and the collection; the search text and the precise
-/// region never leave the device (contract §12). A client holds three in-memory caches that every call made
-/// on it shares, and persists nothing.
+/// `searchNearby` sends only a coarse, snapped box, the dataset and the collection; the search text and the precise
+/// region never leave the device (contract §12). Text leaves the device only through the methods whose names contain
+/// `Keyword`, and every result's `disclosed` says what the call sent. A client holds three in-memory caches that
+/// every call made on it shares, and persists nothing.
 public actor AtgeoClient {
     public static let defaultServer = URL(string: "https://places.atgeo.org")!
     public static let defaultCacheBudgetBytes = 50 * 1024 * 1024
@@ -79,48 +81,52 @@ public actor AtgeoClient {
     ///   text; `AtgeoError` when `getTiles` answers non-2xx; `DecodingError` when its body holds no tile
     ///   list; the transport's error on a network failure or cancellation. A tile that fails is reported in
     ///   `tileFailures` and counted in `tiles.failed`, never thrown, unless the search was cancelled.
-    public func searchPlaces(
+    public func searchNearby(
         region: Region,
         dataset: String,
         text: String? = nil,
         collection: String? = nil,
         sort: SortMode = .fused
-    ) async throws -> SearchResult {
+    ) async throws -> NearbySearchResult {
         try validateRegion(region)
         let query = normalize(text ?? "")
         if sort == .similarity && query.isEmpty { throw AtgeoArgumentError.similarityRequiresText }
         // No checkCancellation() here: a fully cached search completes even when cancelled (contract §11).
 
-        let lists = try await tileLists(dataset: dataset, collection: collection, bboxes: queryBboxes(region))
+        let (lists, listRequested) = try await tileLists(dataset: dataset, collection: collection, bboxes: queryBboxes(region))
         var seen = Set<OrdinalKey>()
         let urls = lists.flatMap(\.tiles).filter { seen.insert(OrdinalKey($0)).inserted }.sorted(by: ordinalLess)
-        let (loaded, failures) = try await fetchTiles(urls)
+        let (loaded, failures, tileRequested) = try await fetchTiles(urls)
         tiles.keepParsed(loaded.map { ($0.key.string, $0.value.generation, $0.value.records) })
 
         // In URL order, whatever order the tiles arrived in, so the dedupe winner is fixed (contract §4.3), and
         // so are the failures (§4.4).
         let records = urls.flatMap { loaded[OrdinalKey($0)]?.records ?? [] }
         let overview = lists.contains(where: \.overview)
-        let result = SearchResult(
+        let result = NearbySearchResult(
             places: assemble(records, region: region, query: query, sort: sort,
                              dataset: dataset, collection: collection, overview: overview),
             complete: failures.isEmpty,
             overview: overview,
             tiles: .init(fetched: loaded.count, failed: failures.count),
             tileFailures: failures.sorted { ordinalLess($0.url, $1.url) },
-            attribution: attributionUnion(urls.compactMap { loaded[OrdinalKey($0)]?.attribution }))
+            attribution: attributionUnion(urls.compactMap { loaded[OrdinalKey($0)]?.attribution }),
+            // The 0.01 degree grid went out if a getTiles request or a tile fetch was attempted; a tile the client
+            // refused was not attempted, and a fetch that then failed was (contract §4.11).
+            disclosed: Disclosure(keyword: false, region: listRequested || tileRequested ? 0.01 : nil))
         // Logged only now, when the search is sure to return them, and in their order (contract §14).
         result.tileFailures.forEach(log)
         return result
     }
 
-    /// One tile list per bbox, in bbox order. Both cache keys are looked up before any request, so only misses
-    /// are fetched, concurrently; a failure fails the search and caches nothing for its key (contract §4.2).
-    private func tileLists(dataset: String, collection: String?, bboxes: [String]) async throws -> [TileList] {
+    /// One tile list per bbox, in bbox order, and whether any `getTiles` request was made. Both cache keys are looked
+    /// up before any request, so only misses are fetched, concurrently; a failure fails the search and caches nothing
+    /// for its key (contract §4.2).
+    private func tileLists(dataset: String, collection: String?, bboxes: [String]) async throws -> (lists: [TileList], requested: Bool) {
         let keys = bboxes.map { "\(dataset)|\(collection ?? "")|\($0)" }
         var lists = keys.map { tileLists.get($0) }
         let missing = lists.indices.filter { lists[$0] == nil }
-        if missing.isEmpty { return lists.map { $0! } }
+        if missing.isEmpty { return (lists.map { $0! }, false) }
 
         let transport = self.transport
         let urls = try missing.map { i -> URL in
@@ -143,7 +149,7 @@ public actor AtgeoClient {
                 lists[i] = list
             }
         }
-        return lists.map { $0! }
+        return (lists.map { $0! }, true)
     }
 
     /// Loads the tiles at most `maxTilesInFlight` requests at a time, in URL order. A cached tile is used without
@@ -151,8 +157,9 @@ public actor AtgeoClient {
     /// cached tile whose records are not memoized is parsed again in a child that takes no request slot, so
     /// requests go out exactly when they would if every cached tile were memoized. A failed tile is reported,
     /// not retried and not thrown, unless the search was cancelled (contract §4.4). The failures come back in
-    /// completion order; the caller sorts them.
-    private func fetchTiles(_ urls: [String]) async throws -> (loaded: [OrdinalKey: LoadedTile], failures: [TileFailure]) {
+    /// completion order; the caller sorts them. `requested` is whether any tile fetch was attempted, a refused URL
+    /// not being one (contract §4.11).
+    private func fetchTiles(_ urls: [String]) async throws -> (loaded: [OrdinalKey: LoadedTile], failures: [TileFailure], requested: Bool) {
         enum Child: Sendable {
             case fetched(url: String, body: Data, records: [PreparedRecord], keys: Set<Int>, attribution: [Attribution])
             case parsed(url: String, generation: Int, records: [PreparedRecord], attribution: [Attribution])
@@ -163,10 +170,11 @@ public actor AtgeoClient {
         }
         let transport = self.transport
         return try await withThrowingTaskGroup(
-            of: Child.self, returning: (loaded: [OrdinalKey: LoadedTile], failures: [TileFailure]).self
+            of: Child.self, returning: (loaded: [OrdinalKey: LoadedTile], failures: [TileFailure], requested: Bool).self
         ) { group in
             var loaded: [OrdinalKey: LoadedTile] = [:]
             var failures: [TileFailure] = []
+            var requested = false
             var pending = urls[...]
             var children = 0
             func addNext() {
@@ -193,6 +201,9 @@ public actor AtgeoClient {
                         // named by where it arose, not by the error's type (contract §4.4). Checked here, before
                         // any transport sees the URL.
                         guard let u = tileRequestURL(url) else { return .failed(try tileFailure(url, .refused, refusedTileURL())) }
+                        // A cancelled search sends nothing more, even through a transport that ignores cancellation
+                        // (contract §11).
+                        try Task.checkCancellation()
                         let response: HTTPResponse
                         do { response = try await transport.get(u) } catch { return .failed(try tileFailure(url, .transport, error)) }
                         let body: Data
@@ -218,6 +229,7 @@ public actor AtgeoClient {
                 case let .fetched(url, body, records, keys, attribution):
                     // Outside the child's guards: an error here would fail the search, not the tile.
                     tileParses += 1
+                    requested = true
                     let generation = tiles.insert(url, body: body, keys: keys, size: body.count, attribution: attribution)
                     loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records, attribution: attribution)
                     addNext()
@@ -225,6 +237,8 @@ public actor AtgeoClient {
                     tileParses += 1
                     loaded[OrdinalKey(url)] = LoadedTile(generation: generation, records: records, attribution: attribution)
                 case let .failed(failure):
+                    // The request was attempted unless the URL was refused.
+                    if failure.kind != .refused { requested = true }
                     failures.append(failure)
                     addNext()
                 case let .reparseFailed(failure):
@@ -232,8 +246,101 @@ public actor AtgeoClient {
                     failures.append(failure)
                 }
             }
-            return (loaded, failures)
+            return (loaded, failures, requested)
         }
+    }
+
+    /// Places whose name matches `keyword`, asked of the server. This sends the keyword (contract §16).
+    ///
+    /// One `org.atgeo.searchPlaces` request with the `dataset`, the `collection` only if given, `q` equal to
+    /// `keyword` exactly as passed, and the `region` snapped outward to whole degrees only if given; nothing is
+    /// cached. The hits are the server's, in its order, with no distance and no score; `disclosed` is
+    /// `keyword: true` and a region of 1 degree if a region was given. A keyword the server cannot use, which is
+    /// one with no word of two or more characters (contract §17), is not an argument error: the server answers
+    /// `KeywordRequired`.
+    ///
+    /// - Throws: `AtgeoArgumentError` before any request for a `region` that is not a valid bbox; `AtgeoError` when
+    ///   the server answers non-2xx (`KeywordRequired`, `InvalidRequest` for a keyword over 256 bytes of UTF-8, and
+    ///   others); `DecodingError` when the body has no `places` array; the transport's error on a network failure
+    ///   or cancellation. A request whose task is already cancelled is not sent.
+    public func searchByKeyword(
+        keyword: String,
+        dataset: String,
+        collection: String? = nil,
+        region: KeywordRegion? = nil
+    ) async throws -> KeywordSearchResult {
+        if let region { try validateKeywordRegion(region) }
+        var params: [(name: String, value: String)] = [("dataset", dataset)]
+        if let collection { params.append(("collection", collection)) }
+        params.append(("q", keyword))
+        if let region { params.append(("bbox", keywordBbox(region))) }
+        guard let url = xrpcURL(base: base, nsid: "org.atgeo.searchPlaces", params) else { throw URLError(.badURL) }
+        let places = try searchedPlaces(decodeJSON(try await fetchBody(transport, url)))
+        return KeywordSearchResult(
+            places: places.map { p in
+                KeywordHit(
+                    origin: p.origin, place: p.value, importance: p.importance,
+                    collection: collectionOf(p.value, attribution: p.attribution))
+            },
+            attribution: attributionUnion(places.map(\.attribution)),
+            disclosed: Disclosure(keyword: true, region: region == nil ? nil : 1))
+    }
+
+    /// A nearby search with `keyword` as its text and, only if that finds no word match, a keyword request
+    /// (contract §18). The keyword stays on the device unless no nearby hit matches it word for word (match tier 1)
+    /// and it can qualify (contract §17); then it is sent as `searchByKeyword` sends it, with the nearby region as
+    /// a box snapped to whole degrees for `.degree` and no region for `.none`. `disclosed` says which.
+    ///
+    /// The keyword's hits come first, then the nearby hits whose origin the keyword's do not hold. A keyword the
+    /// server refuses with `KeywordRequired` leaves the nearby result, with `disclosed.keyword` true.
+    ///
+    /// - Throws: As `searchNearby`, and as `searchByKeyword` for the second half. A failure after the nearby half,
+    ///   including a cancellation, loses the nearby result, and the keyword may have reached the server.
+    public func searchNearbyThenByKeyword(
+        region: Region,
+        dataset: String,
+        keyword: String,
+        keywordRegion: KeywordRegionMode,
+        collection: String? = nil,
+        sort: SortMode = .fused
+    ) async throws -> FallbackSearchResult {
+        let nearby = try await searchNearby(region: region, dataset: dataset, text: keyword, collection: collection, sort: sort)
+        let tokens = queryTokens(normalize(keyword))
+        // Solid hit: a tier 1 hit, at any score. And a keyword the server would refuse is not sent.
+        if nearby.places.contains(where: { matchTier(tokens, names: normalizedNames($0.place)) == 1 }) || !qualifies(keyword) {
+            return FallbackSearchResult(nearby)
+        }
+        let sentRegion: KeywordRegion? = keywordRegion == .degree ? enclosingKeywordRegion(of: region) : nil
+        let found: KeywordSearchResult
+        do {
+            found = try await searchByKeyword(keyword: keyword, dataset: dataset, collection: collection, region: sentRegion)
+        } catch let error as AtgeoError where error.code == "KeywordRequired" {
+            // The qualifying check let through a keyword the server refuses (contract §18, step 8): the nearby
+            // result, with the keyword reported as sent.
+            let grid: Double? = sentRegion == nil ? nil : 1
+            return FallbackSearchResult(nearby, disclosed: Disclosure(keyword: true, region: nearby.disclosed.region ?? grid))
+        }
+        // A hit with no origin is never left out. Origins are compared by code units, as in JavaScript.
+        let origins = Set(found.places.compactMap { $0.origin.map(OrdinalKey.init) })
+        let remaining = nearby.places.filter { hit in hit.origin.map { !origins.contains(OrdinalKey($0)) } ?? true }
+        return FallbackSearchResult(
+            nearby,
+            places: found.places.map(PlaceHit.keyword) + remaining.map(PlaceHit.nearby),
+            attribution: attributionUnion([nearby.attribution, found.attribution]),
+            disclosed: Disclosure(keyword: true, region: nearby.disclosed.region ?? found.disclosed.region))
+    }
+
+    /// An autocompleter for a text field: each of its `searchByKeyword(_:)` calls supersedes the previous call on
+    /// it. Two fields on one page make two autocompleters, which do not supersede each other (contract §19).
+    ///
+    /// - Throws: `AtgeoArgumentError` for a `region` that is not a valid bbox, as `searchByKeyword`.
+    public nonisolated func autocompleteByKeyword(
+        dataset: String,
+        collection: String? = nil,
+        region: KeywordRegion? = nil
+    ) throws -> KeywordAutocomplete {
+        if let region { try validateKeywordRegion(region) }
+        return KeywordAutocomplete(client: self, dataset: dataset, collection: collection, region: region)
     }
 
     /// The place whose origin is `origin`: from any cached tile without a request, else from the server's

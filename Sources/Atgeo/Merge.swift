@@ -33,7 +33,13 @@ func inCollection(_ r: TileRecord, dataset: String, collection: String) -> Bool 
 /// `urn:atgeo:{dataset}:{collection}:` prefixes `value.origin`, by code units. Only `value.origin` counts, never
 /// the `uri` fallback, and the origin is never split. A fresh key holding just the two names; nil when none matches.
 func hitCollection(_ r: TileRecord, attribution: [Attribution]) -> CollectionKey? {
-    guard let origin = r.value["origin"]?.stringValue else { return nil }
+    collectionOf(r.value, attribution: attribution)
+}
+
+/// `hitCollection` for a place value and the attribution it is matched against: a tile's for a nearby hit, the
+/// element's own for a keyword hit (contract §16).
+func collectionOf(_ value: JSONObject, attribution: [Attribution]) -> CollectionKey? {
+    guard let origin = value["origin"]?.stringValue else { return nil }
     let units = origin.utf16
     for entry in attribution where units.starts(with: "urn:atgeo:\(entry.dataset):\(entry.collection):".utf16) {
         return CollectionKey(dataset: entry.dataset, collection: entry.collection)
@@ -46,7 +52,7 @@ func hitCollection(_ r: TileRecord, attribution: [Attribution]) -> CollectionKey
 func assemble(
     records: [TileRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?,
     overview: Bool = false
-) -> [SearchHit] {
+) -> [NearbyHit] {
     assemble(records.map(PreparedRecord.init), region: region, query: query, sort: sort, dataset: dataset, collection: collection,
              overview: overview)
 }
@@ -54,7 +60,7 @@ func assemble(
 func assemble(
     _ records: [PreparedRecord], region: Region, query: String, sort: SortMode, dataset: String, collection: String?,
     overview: Bool = false
-) -> [SearchHit] {
+) -> [NearbyHit] {
     let kept = dedupe(records)
         .filter { p in collection.map { inCollection(p.record, dataset: dataset, collection: $0) } ?? true }
         .filter { inRegion(locate($0.record.value), region) }

@@ -165,7 +165,7 @@ func measureCacheRow(memoize: Bool) async -> String {
     releaseFreeMemory()
     let before = residentBytes()
     for i in 0..<fillSearches {
-        _ = try! await client.searchPlaces(region: region, dataset: "fill.\(i * 8).8")
+        _ = try! await client.searchNearby(region: region, dataset: "fill.\(i * 8).8")
     }
     let grown = residentBytes() - before
     releaseFreeMemory()
@@ -214,12 +214,12 @@ func timeWarmSearch() async {
     ]
     for c in cases {
         let client = AtgeoClient(server: URL(string: "https://bench.example")!, transport: BenchTransport())
-        let warm = try! await client.searchPlaces(region: c.region, dataset: "openstreetmap.org", collection: "node")
+        let warm = try! await client.searchNearby(region: c.region, dataset: "openstreetmap.org", collection: "node")
         let texts = (1...c.typed.count).map { String(c.typed.prefix($0)) }
         var times: [Double] = []
         for text in (texts + texts).prefix(20) {
             let start = DispatchTime.now().uptimeNanoseconds
-            _ = try! await client.searchPlaces(region: c.region, dataset: "openstreetmap.org", text: text, collection: "node")
+            _ = try! await client.searchNearby(region: c.region, dataset: "openstreetmap.org", text: text, collection: "node")
             times.append(Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6)
         }
         let names = Set(warm.places.compactMap { $0.place["name"]?.stringValue })

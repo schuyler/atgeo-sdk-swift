@@ -258,8 +258,8 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     func noTileList(body: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, body)])
         let client = server.client()
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
-        #expect(await throwsDecodingError { _ = try await client.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
+        #expect(await throwsDecodingError { _ = try await client.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") })
+        #expect(await throwsDecodingError { _ = try await client.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") })
         #expect(server.getTilesRequests.count == 2)
     }
 
@@ -268,7 +268,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
         let server = try FakeServer(
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             rawBodies: [getTilesPath: raw(200, #"{"tiles":[5,null,"\#(tile)",{"u":1}]}"#)])
-        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.count == 1)
     }
@@ -276,7 +276,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func nullLocationsAndVariantsAreSkipped() async throws {
         let value = place("a", "Munich", [.null, point(37.775, -122.415)], ["variants": .array([.null, .object(["name": .string("München")])])])
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: [record(value)])])])
-        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", text: "munchen", collection: "place")
+        let result = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org", text: "munchen", collection: "place")
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
     }
 
@@ -291,7 +291,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
             """#),
         ])
         let client = server.client()
-        let result = try await client.searchPlaces(region: sf, dataset: "overturemaps.org")
+        let result = try await client.searchNearby(region: sf, dataset: "overturemaps.org")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.map(\.origin) == ["urn:x:2", nil])
         #expect(result.places.map(\.importance) == [nil, nil])
@@ -305,7 +305,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
             getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#),
             tile: raw(200, #"{"records":[{"value":{"origin":"o","locations":[{"$type":"community.lexicon.location.geo","latitude":[37.775],"longitude":"-122.415"}]}}]}"#),
         ])
-        #expect(try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org").places.isEmpty)
+        #expect(try await server.client().searchNearby(region: sf, dataset: "overturemaps.org").places.isEmpty)
     }
 
     // Under JSONDecoder, 1e400 anywhere in a tile failed the whole tile; now it is infinity, which the
@@ -316,7 +316,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
             getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#),
             tile: raw(200, #"{"records":[{"value":{"origin":"o","locations":[\#(geoAt)],"extra":1e400},"importance":1e400}]}"#),
         ])
-        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org")
+        let result = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.map(\.origin) == ["o"])
         #expect(result.places.first?.importance == nil)
@@ -330,7 +330,7 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     ])
     func errorBody(body: String, code: String, message: String) async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(400, body)])
-        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
+        await #expect(throws: AtgeoError(code: code, message: message, status: 400)) { _ = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") }
     }
 
     @Test("a getPlace body with no value object is a decoding error, the earlier shape included",
@@ -371,13 +371,13 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
     @Test func aTileThatIsNotJSONCountsAsFailed() async throws {
         let tile = tileURL("a")
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, #"{"tiles":["\#(tile)"]}"#), tile: raw(200, "<html>")])
-        let result = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 0, failed: 1))
     }
 
     @Test func aGetTilesBodyThatIsNotJSONIsADecodingError() async throws {
         let server = try FakeServer(rawBodies: [getTilesPath: raw(200, "<html>")])
-        #expect(await throwsDecodingError { _ = try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") })
+        #expect(await throwsDecodingError { _ = try await server.client().searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") })
     }
 }
 
@@ -402,14 +402,14 @@ private func throwsDecodingError(_ body: () async throws -> Void) async -> Bool 
 // MARK: - Tile attribution (contract §1, §4.4, §4.10), through the client
 
 @Suite("tile attribution is read leniently") struct TileAttribution {
-    private func search(_ tile: String) async throws -> SearchResult {
+    private func search(_ tile: String) async throws -> NearbySearchResult {
         let url = tileURL("raw")
         let good = #"{"value":\#(try goodValue()),"importance":4}"#
         let server = try FakeServer(rawBodies: [
             getTilesPath: raw(200, #"{"tiles":["\#(url)"]}"#),
             url: raw(200, tile.replacingOccurrences(of: "GOOD", with: good)),
         ])
-        return try await server.client().searchPlaces(region: sf, dataset: "overturemaps.org")
+        return try await server.client().searchNearby(region: sf, dataset: "overturemaps.org")
     }
 
     private func goodValue() throws -> String {

@@ -6,18 +6,18 @@ import Atgeo  // not @testable: everything here must be reachable from an app
 // persists them, and shows their errors.
 
 @Suite struct PublicAPITests {
-    private let hit = SearchHit(
+    private let hit = NearbyHit(
         origin: "urn:atgeo:overturemaps.org:place:1",
         place: ["name": .string("Reading Terminal Market"), "importance": .number(7)],
         importance: 7, distance: 120.5, score: 0.91)
 
     @Test func everyResultTypeCanBeBuiltOutsideTheModule() {
-        let result = SearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0))
+        let result = NearbySearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0))
         #expect(result.places.first?.origin == hit.origin)
         #expect(result.tileFailures.isEmpty)
         let failure = TileFailure(url: "https://tiles.example/0.json", kind: .status, status: 503,
                                   error: AtgeoError(code: "HttpError", message: "HTTP 503", status: 503))
-        let partial = SearchResult(places: [], complete: false, overview: false, tiles: .init(fetched: 0, failed: 1),
+        let partial = NearbySearchResult(places: [], complete: false, overview: false, tiles: .init(fetched: 0, failed: 1),
                                    tileFailures: [failure])
         #expect(partial.tileFailures == [TileFailure(url: "https://tiles.example/0.json", kind: .status, status: 503, error: nil)])
         #expect(TileFailure.Kind(rawValue: "refused") == .refused && TileFailure.Kind.transport.rawValue == "transport")
@@ -39,18 +39,18 @@ import Atgeo  // not @testable: everything here must be reachable from an app
     }
 
     @Test func resultsRoundTripThroughJSON() throws {
-        let result = SearchResult(places: [hit], complete: false, overview: true, tiles: .init(fetched: 2, failed: 1),
+        let result = NearbySearchResult(places: [hit], complete: false, overview: true, tiles: .init(fetched: 2, failed: 1),
                                   tileFailures: [TileFailure(url: "https://t/1.json", kind: .decode, error: CocoaError(.coderReadCorrupt))])
         let data = try JSONEncoder().encode(result)
-        let decoded = try JSONDecoder().decode(SearchResult.self, from: data)
+        let decoded = try JSONDecoder().decode(NearbySearchResult.self, from: data)
         #expect(decoded == result)
         #expect(decoded.tileFailures.first?.error == nil)
 
         let record = PlaceRecord(origin: "o", place: ["name": .string("x"), "n": .null], importance: nil)
         #expect(try JSONDecoder().decode(PlaceRecord.self, from: JSONEncoder().encode(record)) == record)
 
-        let unscored = SearchHit(origin: nil, place: [:], importance: nil, distance: 0, score: nil)
-        #expect(try JSONDecoder().decode(SearchHit.self, from: JSONEncoder().encode(unscored)) == unscored)
+        let unscored = NearbyHit(origin: nil, place: [:], importance: nil, distance: 0, score: nil)
+        #expect(try JSONDecoder().decode(NearbyHit.self, from: JSONEncoder().encode(unscored)) == unscored)
     }
 
     // The parser reads 1e400 as infinity, as JSON.parse does; JSONEncoder cannot write it (README, Caching).
@@ -83,7 +83,7 @@ import Atgeo  // not @testable: everything here must be reachable from an app
             }
         }
         let client = AtgeoClient(transport: Canned())
-        let result = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", text: "here", collection: "place")
+        let result = try await client.searchNearby(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", text: "here", collection: "place")
         #expect(result.places.map(\.origin) == ["urn:atgeo:overturemaps.org:place:1"])
         #expect(result.complete && result.tileFailures.isEmpty)
         // Attribution and the hit's collection, through nothing but the public API (contract §4.10, §8).
@@ -93,21 +93,21 @@ import Atgeo  // not @testable: everything here must be reachable from an app
 
     // `dataset` is required, so a search without one does not compile (contract §4.1); the labels are in the order the
     // spec gives. The empty string is a dataset like any other, and goes to the server.
-    @Test func searchPlacesTakesTheDatasetAfterTheRegion() async throws {
+    @Test func searchNearbyTakesTheDatasetAfterTheRegion() async throws {
         struct Recording: HTTPTransport {
             func get(_ url: URL) async throws -> HTTPResponse { HTTPResponse(status: 400, body: Data(#"{"error":"DatasetNotFound"}"#.utf8)) }
         }
         let client = AtgeoClient(transport: Recording())
         await #expect(throws: AtgeoError.self) {
-            _ = try await client.searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "", text: nil, collection: nil, sort: .fused)
+            _ = try await client.searchNearby(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "", text: nil, collection: nil, sort: .fused)
         }
     }
 
     @Test func theNewFieldsCanBeBuiltAndRoundTripThroughJSON() throws {
         let entry = Attribution(dataset: "d", collection: "c", release: "r", source: "s", licenses: ["l"], attribution: "a")
-        let hit = SearchHit(origin: "o", place: [:], importance: nil, distance: 1, score: nil, collection: CollectionKey(dataset: "d", collection: "c"))
-        let result = SearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0), attribution: [entry])
-        #expect(try JSONDecoder().decode(SearchResult.self, from: JSONEncoder().encode(result)) == result)
+        let hit = NearbyHit(origin: "o", place: [:], importance: nil, distance: 1, score: nil, collection: CollectionKey(dataset: "d", collection: "c"))
+        let result = NearbySearchResult(places: [hit], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0), attribution: [entry])
+        #expect(try JSONDecoder().decode(NearbySearchResult.self, from: JSONEncoder().encode(result)) == result)
         let record = PlaceRecord(origin: "o", place: [:], importance: 1, attribution: [entry])
         #expect(try JSONDecoder().decode(PlaceRecord.self, from: JSONEncoder().encode(record)) == record)
         #expect(ServiceDescription(did: nil, tilesets: [], maxTiles: 50).maxTiles == 50)
@@ -115,12 +115,40 @@ import Atgeo  // not @testable: everything here must be reachable from an app
         #expect(Region.bbox(west: 170, south: 10, east: -170, north: 20) != Region.bbox(west: -170, south: 10, east: 170, north: 20))
     }
 
+    @Test func theKeywordTypesCanBeBuiltAndRoundTripThroughJSON() throws {
+        let keywordHit = KeywordHit(origin: "o", place: ["name": .string("N")], importance: 3, collection: CollectionKey(dataset: "d", collection: "c"))
+        let keyword = KeywordSearchResult(places: [keywordHit], attribution: [], disclosed: Disclosure(keyword: true, region: 1))
+        #expect(try JSONDecoder().decode(KeywordSearchResult.self, from: JSONEncoder().encode(keyword)) == keyword)
+        #expect(keywordHit.via == .keyword && keywordHit.name == "N" && hit.via == .tiles)
+        let fallback = FallbackSearchResult(
+            places: [.keyword(keywordHit), .nearby(hit)], complete: true, overview: false, tiles: .init(fetched: 1, failed: 0),
+            disclosed: Disclosure(keyword: true, region: 0.01))
+        #expect(try JSONDecoder().decode(FallbackSearchResult.self, from: JSONEncoder().encode(fallback)) == fallback)
+        #expect(fallback.places.map(\.via) == [.keyword, .tiles])
+        #expect(KeywordRegion(west: 1, south: 2, east: 3, north: 4) == KeywordRegion(west: 1, south: 2, east: 3, north: 4))
+        #expect(KeywordRegionMode.degree != KeywordRegionMode.none)
+    }
+
+    @Test func aKeywordSearchAndAnAutocompleterAreReachableThroughThePublicAPI() async throws {
+        struct Canned: HTTPTransport {
+            func get(_ url: URL) async throws -> HTTPResponse {
+                HTTPResponse(status: 200, body: Data(#"{"places":[{"uri":"u","value":{"name":"Here"}}]}"#.utf8))
+            }
+        }
+        let client = AtgeoClient(transport: Canned())
+        let found = try await client.searchByKeyword(keyword: "he", dataset: "overturemaps.org")
+        #expect(found.places.map(\.origin) == ["u"] && found.disclosed == Disclosure(keyword: true, region: nil))
+        let typing = try client.autocompleteByKeyword(dataset: "overturemaps.org")
+        #expect(try await typing.searchByKeyword("h").disclosed == Disclosure(keyword: false, region: nil))
+        #expect(try await typing.searchByKeyword("he").places.count == 1)
+    }
+
     // Results encoded before attribution existed still decode, with none, as for tileFailures.
     @Test func resultsEncodedBeforeAttributionExistedStillDecode() throws {
         let old = Data(#"""
         {"places":[{"origin":"o","place":{},"distance":1}],"complete":true,"overview":false,"tiles":{"fetched":1,"failed":0}}
         """#.utf8)
-        let result = try JSONDecoder().decode(SearchResult.self, from: old)
+        let result = try JSONDecoder().decode(NearbySearchResult.self, from: old)
         #expect(result.attribution == [] && result.places.first?.collection == nil)
         let record = try JSONDecoder().decode(PlaceRecord.self, from: Data(#"{"origin":"o","place":{}}"#.utf8))
         #expect(record.attribution == [])
@@ -136,7 +164,7 @@ import Atgeo  // not @testable: everything here must be reachable from an app
                 return HTTPResponse(status: 404, body: Data())
             }
         }
-        let result = try await AtgeoClient(transport: Failing()).searchPlaces(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", collection: "place")
+        let result = try await AtgeoClient(transport: Failing()).searchNearby(region: .circle(lat: 1, lon: 1, radius: 10), dataset: "overturemaps.org", collection: "place")
         #expect(result.tileFailures.map(\.url) == ["file:///x", "https://tiles.example/0.json", "https://tiles.example/1.json"])
         #expect(result.tileFailures.map(\.kind) == [.refused, .transport, .status])
         #expect(result.tileFailures.map(\.status) == [nil, nil, 404])

@@ -28,7 +28,7 @@ private final class Counter: @unchecked Sendable {
     @Test func atMostEightTilesAreInFlight() async throws {
         let server = try manyTiles(20)
         let delaying = DelayingTransport(server) { $0.absoluteString.hasPrefix("https://tiles.example/") ? 0.05 : nil }
-        let result = try await client(delaying).searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+        let result = try await client(delaying).searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 20, failed: 0))
         #expect(result.places.count == 20)
         #expect(delaying.peakInFlight == 8)
@@ -41,7 +41,7 @@ private final class Counter: @unchecked Sendable {
         // seconds for its tiles. Cancellation must still beat the held tile's 300 s by a wide margin.
         let delaying = DelayingTransport(server) { $0.absoluteString == held ? 300 : nil }
         let c = client(delaying)
-        let task = Task { try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
+        let task = Task { try await c.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") }
         // Wait until the held tile is in flight, then cancel.
         let deadline = Date().addingTimeInterval(120)
         while delaying.completionOrder.count < 3 && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
@@ -59,14 +59,17 @@ private final class Counter: @unchecked Sendable {
     @Test func aCancelledTaskOnAWarmCacheStillReturns() async throws {
         let server = try manyTiles(3)
         let c = client(server)
-        let warm = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+        let warm = try await c.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         server.goOffline()
-        let task = Task { () async throws -> SearchResult in
+        let task = Task { () async throws -> NearbySearchResult in
             while !Task.isCancelled { await Task.yield() }
-            return try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+            return try await c.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         }
         task.cancel()
-        #expect(try await task.value == warm)
+        // The same answer, except that a search served from the cache sent nothing and so discloses no region.
+        var expected = warm
+        expected.disclosed = Disclosure(keyword: false, region: nil)
+        #expect(try await task.value == expected)
     }
 
     @Test func aFailedGetTilesCachesNothingAndARetryAsksAgain() async throws {
@@ -76,8 +79,8 @@ private final class Counter: @unchecked Sendable {
             tilesets: [overture([FakeTile(url: tile, records: [record(place("a", "A", [point(37.775, -122.415)]))])])],
             tilesFor: { _ in calls.next() == 1 ? .error(code: "InternalServerError", message: "try again") : .tiles([tile]) })
         let c = server.client()
-        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again", status: 400)) { _ = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place") }
-        let result = try await c.searchPlaces(region: sf, dataset: "overturemaps.org", collection: "place")
+        await #expect(throws: AtgeoError(code: "InternalServerError", message: "try again", status: 400)) { _ = try await c.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place") }
+        let result = try await c.searchNearby(region: sf, dataset: "overturemaps.org", collection: "place")
         #expect(server.getTilesRequests.count == 2)
         #expect(result.places.count == 1)
     }
@@ -86,8 +89,8 @@ private final class Counter: @unchecked Sendable {
         let server = try manyTiles(12)
         let delaying = DelayingTransport(server) { $0.absoluteString.hasPrefix("https://tiles.example/") ? 0.01 : nil }
         let c = client(delaying)
-        let results = try await withThrowingTaskGroup(of: SearchResult.self) { group in
-            for _ in 0..<6 { group.addTask { try await c.searchPlaces(region: sf, dataset: "overturemaps.org", text: "P1", collection: "place") } }
+        let results = try await withThrowingTaskGroup(of: NearbySearchResult.self) { group in
+            for _ in 0..<6 { group.addTask { try await c.searchNearby(region: sf, dataset: "overturemaps.org", text: "P1", collection: "place") } }
             return try await group.reduce(into: []) { $0.append($1) }
         }
         #expect(results.allSatisfy { $0.places == results[0].places })

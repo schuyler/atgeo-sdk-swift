@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import Atgeo
 
-// The five lenient readers of contract §1 against fixtures/lenient-readers.json (port of test/wire.test.ts). A case is
+// The six lenient readers of contract §1 against fixtures/lenient-readers.json (port of test/wire.test.ts). A case is
 // a response body and either what the reader keeps of it, in JSON terms, or `decodingError`. A field the reader
 // leaves absent is a missing key, so the comparison is exact. The tilePayload result is `{records, attribution?}`.
 
@@ -15,7 +15,7 @@ struct LenientCase: Sendable, CustomTestStringConvertible {
     var testDescription: String { "\(reader): \(name)" }
 }
 
-private let readers = ["getTiles", "tilePayload", "getPlace", "describeService", "describeTileset"]
+private let readers = ["getTiles", "tilePayload", "getPlace", "searchPlaces", "describeService", "describeTileset"]
 
 private func cases() throws -> [LenientCase] {
     try #require(try fixture("lenient-readers.json").arrayValue).map { c in
@@ -52,6 +52,13 @@ private func read(_ reader: String, _ body: JSONValue) throws -> JSONValue {
         var out: JSONObject = ["value": .object(place.place), "attribution": try terms(place.attribution)]
         if let importance = place.importance { out["importance"] = .number(Double(importance)) }
         return .object(out)
+    case "searchPlaces":
+        // `origin` is null when neither the value's nor the element's is a string; the other absent fields are missing keys.
+        return .object(["places": .array(try searchedPlaces(body).map { p in
+            var o: JSONObject = ["origin": p.origin.map(JSONValue.string) ?? .null, "value": .object(p.value), "attribution": try terms(p.attribution)]
+            if let importance = p.importance { o["importance"] = .number(Double(importance)) }
+            return .object(o)
+        })])
     case "describeService":
         return try terms(serviceDescription(body))
     case "describeTileset":
@@ -65,7 +72,7 @@ private func read(_ reader: String, _ body: JSONValue) throws -> JSONValue {
 @Suite("lenient readers") struct LenientReaders {
     @Test func hasACaseForEveryReader() throws {
         #expect(Set(try cases().map(\.reader)) == Set(readers))
-        #expect(try cases().count == 104)
+        #expect(try cases().count == 124)
     }
 
     @Test("reads the body as the fixture says", arguments: try cases())

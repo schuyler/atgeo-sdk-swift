@@ -45,7 +45,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let fake = try setup()
         let network = try await fake.client().getPlace(origin: origin)
         let fresh = fake.client()
-        _ = try await fresh.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place")
+        _ = try await fresh.searchNearby(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place")
         let before = fake.requests.count
         #expect(try await fresh.getPlace(origin: origin) == network)
         #expect(fake.requests.count == before)
@@ -55,7 +55,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     func noRequestForAHit() async throws {
         let fake = try setup()
         let client = fake.client()
-        let places = try await client.searchPlaces(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place").places
+        let places = try await client.searchNearby(region: .bbox(west: -122.40, south: 37.79, east: -122.39, north: 37.80), dataset: "overturemaps.org", collection: "place").places
         let before = fake.requests.count
         _ = try await client.getPlace(origin: try #require(places.first?.origin))
         #expect(fake.requests.count == before)
@@ -66,7 +66,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let uriOnly = withoutOrigin(place("u", "By uri", [point(37.775, -122.415)]))
         let fake = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: [record(uriOnly, importance: 4, uri: "https://example.org/r/u")])])])
         let client = fake.client()
-        let places = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org").places
+        let places = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org").places
         #expect(places.first?.origin == "https://example.org/r/u")
         fake.goOffline()
         #expect(try await client.getPlace(origin: "https://example.org/r/u")
@@ -99,7 +99,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     func attributionFromCache() async throws {
         let fake = try withReferences()
         let client = fake.client()
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         fake.goOffline()
         #expect(try await client.getPlace(origin: origin).attribution == Self.served)
     }
@@ -125,7 +125,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let fake = try FakeServer(tilesets: [tileset])
         let client = fake.client()
         if fromCache {
-            _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+            _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
             fake.goOffline()
         }
         var first = try await client.getPlace(origin: origin)
@@ -227,7 +227,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     }
 }
 
-@Suite("searchPlaces results") struct SearchPlacesResults {
+@Suite("searchNearby results") struct SearchNearbyResults {
     static let records = [
         record(place("cafe", "Zanzibar Cafe", [point(0.001, 0)], [
             "futureKey": .object(["a": .number(1)]), "variants": .array([.object(["name": .string("ZC")])]),
@@ -243,7 +243,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 
     @Test("returns origin, the wire place, importance, metres distance and nil score without text")
     func shape() async throws {
-        let result = try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place")
+        let result = try await setup().searchNearby(region: Self.circle, dataset: "overturemaps.org", collection: "place")
         let cafe = try #require(result.places.first { $0.origin == placeOrigin("cafe") })
         #expect(cafe.place == Self.records[0].value)
         #expect(cafe.place["importance"] == nil)
@@ -254,12 +254,12 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 
     @Test("gives distance 0 to a bbox containing the center")
     func containingBox() async throws {
-        #expect(try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place").places.first { $0.origin == placeOrigin("division") }?.distance == 0)
+        #expect(try await setup().searchNearby(region: Self.circle, dataset: "overturemaps.org", collection: "place").places.first { $0.origin == placeOrigin("division") }?.distance == 0)
     }
 
     @Test("returns a numeric score with text")
     func scoreWithText() async throws {
-        let result = try await setup().searchPlaces(region: Self.circle, dataset: "overturemaps.org", text: "Zanzibar Cafe", collection: "place")
+        let result = try await setup().searchNearby(region: Self.circle, dataset: "overturemaps.org", text: "Zanzibar Cafe", collection: "place")
         let cafe = try #require(result.places.first { $0.origin == placeOrigin("cafe") })
         // vitest's toBeCloseTo(1, 2) is |diff| < 0.005.
         #expect(abs((cafe.score ?? 0) - 1) < 0.005)
@@ -269,10 +269,13 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     @Test("treats text that normalizes to empty as no text")
     func blankText() async throws {
         let client = try setup()
-        let none = try await client.searchPlaces(region: Self.circle, dataset: "overturemaps.org", collection: "place")
-        let blank = try await client.searchPlaces(region: Self.circle, dataset: "overturemaps.org", text: "   ", collection: "place")
+        let none = try await client.searchNearby(region: Self.circle, dataset: "overturemaps.org", collection: "place")
+        let blank = try await client.searchNearby(region: Self.circle, dataset: "overturemaps.org", text: "   ", collection: "place")
         #expect(blank.places.count > 0)
-        #expect(blank == none)
+        // The second search is answered from cache, so it reports sending nothing (contract §4.11).
+        var expected = none
+        expected.disclosed = Disclosure(keyword: false, region: nil)
+        #expect(blank == expected)
         #expect(blank.places.allSatisfy { $0.score == nil })
     }
 }
@@ -280,7 +283,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 @Suite("ordering among places containing the center") struct OrderingAmongContaining {
     private func ids(_ values: [(JSONObject, Int64?)], region: Region, text: String? = nil, sort: SortMode) async throws -> [String] {
         let server = try FakeServer(tilesets: [overture([FakeTile(url: tileURL("a"), records: values.map { record($0.0, importance: $0.1) })])])
-        return try await server.client().searchPlaces(region: region, dataset: "overturemaps.org", text: text, collection: "place", sort: sort).places
+        return try await server.client().searchNearby(region: region, dataset: "overturemaps.org", text: text, collection: "place", sort: sort).places
             .map { String(($0.origin ?? "").dropFirst(placeOrigin("").count)) }
     }
 
@@ -330,9 +333,9 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     func keys() async throws {
         let fake = try setup()
         let client = fake.client()
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way")
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "openstreetmap.org")
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "openstreetmap.org", collection: "way")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "openstreetmap.org")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org")
         #expect(fake.getTilesRequests.map { "\(param($0, "dataset") ?? "null")|\(param($0, "collection") ?? "null")" }
                 == ["openstreetmap.org|way", "openstreetmap.org|null", "overturemaps.org|null"])
     }
@@ -343,7 +346,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
             slug: "osm",
             collections: ["way", "wayside"].map { ["dataset": .string("openstreetmap.org"), "collection": .string($0)] },
             tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772)), record(Self.osm("wayside", "9", 37.773))])])])
-        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
+        let places = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
         #expect(places.map(\.origin) == ["urn:atgeo:openstreetmap.org:way:2"])
     }
 
@@ -355,9 +358,9 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
         let fake = try FakeServer(tilesets: [FakeTileset(
             slug: "osm", collections: [["dataset": .string("openstreetmap.org"), "collection": .string("way")]],
             tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772)), record(contains)])])])
-        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
+        let places = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
         #expect(places.map(\.origin) == ["urn:atgeo:openstreetmap.org:way:2"])
-        let whole = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        let whole = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org").places
         #expect(whole.compactMap(\.origin).sorted() == ["urn:atgeo:openstreetmap.org:way:2", "x:urn:atgeo:openstreetmap.org:way:5"])
         #expect(whole.first { $0.origin == "x:urn:atgeo:openstreetmap.org:way:5" }?.collection == nil)
     }
@@ -365,7 +368,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     @Test("searches a whole dataset when only the dataset is named")
     func wholeDataset() async throws {
         let fake = try setup()
-        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        let places = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org").places
         #expect(places.compactMap(\.origin).sorted() == [
             "https://example.org/r/u", "urn:atgeo:openstreetmap.org:node:1",
             "urn:atgeo:openstreetmap.org:relation:3", "urn:atgeo:openstreetmap.org:way:2",
@@ -378,7 +381,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     @Test("filters to one collection, dropping records with no origin")
     func oneCollection() async throws {
         let fake = try setup()
-        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
+        let places = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org", collection: "way").places
         #expect(places.map(\.origin) == ["urn:atgeo:openstreetmap.org:way:2"])
         #expect(param(try #require(fake.requests.first), "collection") == "way")
     }
@@ -392,7 +395,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     func emptyDataset() async throws {
         let fake = try setup()
         await #expect(throws: AtgeoError.self) {
-            _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "")
+            _ = try await fake.client().searchNearby(region: sfRegion, dataset: "")
         }
         let lists = fake.getTilesRequests
         #expect(lists.count == 1)
@@ -404,7 +407,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
     @Test("sends the collection only when the search has one")
     func collectionOnlyWhenGiven() async throws {
         let fake = try setup()
-        _ = try await fake.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        _ = try await fake.client().searchNearby(region: sfRegion, dataset: "overturemaps.org")
         let first = try #require(fake.requests.first)
         #expect(param(first, "dataset") == "overturemaps.org")
         #expect(URLComponents(url: first, resolvingAgainstBaseURL: false)?.queryItems?.map(\.name).contains("collection") == false)
@@ -412,7 +415,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
 
     @Test("gives each hit the collection its origin names, by prefix, and nil to a hit keyed by uri")
     func hitCollections() async throws {
-        let places = try await setup().client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        let places = try await setup().client().searchNearby(region: sfRegion, dataset: "openstreetmap.org").places
         let byOrigin = Dictionary(uniqueKeysWithValues: places.map { ($0.origin ?? "nil", $0.collection) })
         #expect(byOrigin == [
             "urn:atgeo:openstreetmap.org:node:1": CollectionKey(dataset: "openstreetmap.org", collection: "node"),
@@ -428,7 +431,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
             slug: "osm",
             collections: ["way", "wayside"].map { ["dataset": .string("openstreetmap.org"), "collection": .string($0)] },
             tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772)), record(Self.osm("wayside", "9", 37.773))])])])
-        let places = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org").places
+        let places = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org").places
         #expect(Dictionary(uniqueKeysWithValues: places.map { ($0.origin ?? "", $0.collection?.collection) })
                 == ["urn:atgeo:openstreetmap.org:way:2": "way", "urn:atgeo:openstreetmap.org:wayside:9": "wayside"])
     }
@@ -444,7 +447,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
             ],
             references: [["dataset": .string("openstreetmap.org"), "collection": .string("node"), "source": .string("https://www.openstreetmap.org")]],
             tiles: [FakeTile(url: tileURL("osm"), records: [record(Self.osm("way", "2", 37.772))])])])
-        let result = try await fake.client().searchPlaces(region: sfRegion, dataset: "openstreetmap.org", collection: "way")
+        let result = try await fake.client().searchNearby(region: sfRegion, dataset: "openstreetmap.org", collection: "way")
         #expect(result.attribution == [
             Attribution(dataset: "openstreetmap.org", collection: "node", source: "https://www.openstreetmap.org"),
             Attribution(dataset: "openstreetmap.org", collection: "relation"),
@@ -467,7 +470,7 @@ private let sfRegion = Region.bbox(west: -122.42, south: 37.77, east: -122.41, n
             ["dataset": .string(fullwidth), "collection": .string("c")],
             ["dataset": .string(astral), "collection": .string("c")],
         ]
-        let result = try await FakeServer(tilesets: [tileset]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org")
+        let result = try await FakeServer(tilesets: [tileset]).client().searchNearby(region: sfRegion, dataset: "overturemaps.org")
         #expect(result.attribution.map(\.dataset) == ["overturemaps.org", astral, fullwidth])
     }
 }
@@ -488,10 +491,10 @@ private func sourceFiles() throws -> [(String, String)] {
 @Suite("retired wire names and universal runtime") struct SourceChecks {
     // `dataset` is required with no default (contract §4.1), which in Swift is a non-optional parameter, between
     // `region` and `text`. The compiler enforces it for callers; this keeps a later edit from loosening it.
-    @Test("searchPlaces takes a required, non-optional dataset after region")
+    @Test("searchNearby takes a required, non-optional dataset after region")
     func datasetIsRequired() throws {
         let client = try #require(try sourceFiles().first { $0.0 == "AtgeoClient.swift" }).1
-        #expect(client.firstMatch(of: /func searchPlaces\(\s*region: Region,\s*dataset: String,\s*text: String\? = nil,\s*collection: String\? = nil,\s*sort: SortMode = \.fused\s*\) async throws -> SearchResult/) != nil)
+        #expect(client.firstMatch(of: /func searchNearby\(\s*region: Region,\s*dataset: String,\s*text: String\? = nil,\s*collection: String\? = nil,\s*sort: SortMode = \.fused\s*\) async throws -> NearbySearchResult/) != nil)
         #expect(!client.contains("overturemaps.org"), "the client names no default dataset")
     }
 

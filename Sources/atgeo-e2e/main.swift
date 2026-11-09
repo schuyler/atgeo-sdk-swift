@@ -70,7 +70,7 @@ do {
         "describeTileset does not list the dataset and collection")
     log("describeTileset", "\(tileset.slug ?? "no slug"), \(tileset.collections.count) collection(s)")
 
-    let nearby = try await client.searchPlaces(region: region, dataset: dataset, collection: collection, sort: .distance)
+    let nearby = try await client.searchNearby(region: region, dataset: dataset, collection: collection, sort: .distance)
     check(nearby.complete, "\(nearby.tiles.failed) tile(s) failed")
     check(!nearby.places.isEmpty, "no places in region")
     let distances = nearby.places.map(\.distance)
@@ -81,18 +81,51 @@ do {
         nearby.attribution.contains { wanted(dataset: $0.dataset, collection: $0.collection) },
         "the search's attribution does not credit \(wantedName)")
     check(nearby.places.contains { $0.collection != nil }, "no hit names its collection")
-    log("searchPlaces (no text)", "\(nearby.places.count) places from \(nearby.tiles.fetched) tile(s)")
+    log("searchNearby (no text)", "\(nearby.places.count) places from \(nearby.tiles.fetched) tile(s)")
 
     guard let named = nearby.places.first(where: { $0.origin != nil && !($0.place["name"]?.stringValue ?? "").isEmpty }),
         let origin = named.origin, let name = named.place["name"]?.stringValue
     else { fail("no named place in region") }
-    let matched = try await client.searchPlaces(region: region, dataset: dataset, text: name, collection: collection)
+    let matched = try await client.searchNearby(region: region, dataset: dataset, text: name, collection: collection)
     check(
         matched.places.contains { $0.origin == origin && $0.score != nil },
         "named place missing from text search")
     check((matched.places.first?.score ?? 0) > 0, "top text hit has no score")
     let top = matched.places[0].place["name"]?.stringValue ?? "(no name)"
-    log("searchPlaces (text)", "\"\(name)\" -> top hit \(top), \(matched.places.count) places")
+    log("searchNearby (text)", "\"\(name)\" -> top hit \(top), \(matched.places.count) places")
+
+    // The keyword methods send text, so each is checked against what it says it disclosed.
+    guard let point = named.location.point else { fail("named place has no point") }
+    let cell = KeywordRegion(west: point.lon, south: point.lat, east: point.lon, north: point.lat)
+    let keyword = try await client.searchByKeyword(keyword: name, dataset: dataset, collection: collection, region: cell)
+    check(!keyword.places.isEmpty, "keyword search found nothing in the named place's degree")
+    check(keyword.places.allSatisfy { $0.via == .keyword }, "keyword hits are not marked via keyword")
+    check(keyword.disclosed == Disclosure(keyword: true, region: 1), "keyword search disclosed \(keyword.disclosed)")
+    log("searchByKeyword", "\"\(name)\" in a 1 degree cell -> \(keyword.places.count) places, top hit \(keyword.places[0].name ?? "(no name)")")
+
+    let solid = try await client.searchNearbyThenByKeyword(
+        region: region, dataset: dataset, keyword: name, keywordRegion: .degree, collection: collection)
+    check(solid.places.contains { $0.origin == origin }, "named place missing from the combined search")
+    check(!solid.disclosed.keyword, "the keyword was sent although a nearby hit matched it")
+    log("searchNearbyThenByKeyword (nearby hit)", "\(solid.places.count) places, keyword sent: \(solid.disclosed.keyword)")
+
+    let fallback = try await client.searchNearbyThenByKeyword(
+        region: region, dataset: dataset, keyword: "zzzzqqqq", keywordRegion: .none, collection: collection)
+    check(fallback.disclosed.keyword, "the keyword was not sent although no nearby hit matched it")
+    log("searchNearbyThenByKeyword (fallback)", "\(fallback.places.count) places, keyword sent: \(fallback.disclosed.keyword)")
+
+    let typing = try client.autocompleteByKeyword(dataset: dataset, collection: collection)
+    let skipped = try await typing.searchByKeyword(String(String.UnicodeScalarView(name.unicodeScalars.prefix(1))))
+    check(skipped.disclosed == Disclosure(keyword: false, region: nil), "a one character prefix was sent")
+    // A prefix of the name's first word of two or more characters, so it qualifies and matches the named place.
+    let words = name.split { $0.isWhitespace || $0.isPunctuation }
+    guard let word = words.first(where: { $0.unicodeScalars.count >= 2 }) else { fail("no word of two characters in \(name)") }
+    let prefix = String(String.UnicodeScalarView(word.unicodeScalars.prefix(3)))
+    let completed = try await typing.searchByKeyword(prefix)
+    check(completed.disclosed == Disclosure(keyword: true, region: nil), "autocomplete disclosed \(completed.disclosed)")
+    check(!completed.places.isEmpty, "keyword search with no region found nothing")
+    check(completed.places.allSatisfy { $0.via == .keyword }, "keyword hits are not marked via keyword")
+    log("autocompleteByKeyword", "\"\(prefix)\" -> \(completed.places.count) places, one character skipped")
 
     let fresh = AtgeoClient(server: server)
     let record = try await fresh.getPlace(origin: origin)

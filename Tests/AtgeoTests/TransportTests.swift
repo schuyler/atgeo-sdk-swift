@@ -37,14 +37,14 @@ private func status(_ body: () async throws -> Void) async -> Int? {
 @Suite("failed tiles") struct FailedTiles {
     @Test("reports a complete search")
     func complete() async throws {
-        let result = try await twoTiles().client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await twoTiles().client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.complete)
         #expect(result.tiles == .init(fetched: 2, failed: 0))
     }
 
     @Test("returns surviving results, marked incomplete, when a tile answers non-200")
     func non200() async throws {
-        let result = try await twoTiles(failTiles: [tileURL("b")]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await twoTiles(failTiles: [tileURL("b")]).client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(!result.complete)
         #expect(result.tiles == .init(fetched: 1, failed: 1))
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
@@ -55,7 +55,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         let server = try twoTiles()
         let client = AtgeoClient(server: AtgeoClient.defaultServer, transport: FlakyTransport(base: server, failing: tileURL("a")),
                                  cacheBudgetBytes: AtgeoClient.defaultCacheBudgetBytes, now: { Date() })
-        let result = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(!result.complete)
         #expect(result.tiles == .init(fetched: 1, failed: 1))
         #expect(result.places.map(\.origin) == [placeOrigin("b")])
@@ -64,13 +64,13 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("does not retry a failed tile")
     func noRetry() async throws {
         let server = try twoTiles(failTiles: [tileURL("b")])
-        _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requestStrings.filter { $0 == tileURL("b") }.count == 1)
     }
 
     @Test("reports every tile failed without throwing")
     func allFailed() async throws {
-        let result = try await twoTiles(failTiles: [tileURL("a"), tileURL("b")]).client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await twoTiles(failTiles: [tileURL("a"), tileURL("b")]).client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.places.isEmpty && !result.complete && result.tiles == .init(fetched: 0, failed: 2))
     }
 }
@@ -79,8 +79,8 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("surfaces BboxTooLarge from getTiles")
     func bboxTooLarge() async throws {
         let server = try FakeServer(tilesFor: { _ in .error(code: "BboxTooLarge", message: "bbox too large") })
-        #expect(await code { _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place") } == "BboxTooLarge")
-        #expect(await status { _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place") } == 400)
+        #expect(await code { _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place") } == "BboxTooLarge")
+        #expect(await status { _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place") } == 400)
     }
 
     @Test("carries the HTTP status, whatever the body says", arguments: [
@@ -98,13 +98,13 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("surfaces CollectionNotFound from getTiles")
     func collectionNotFound() async throws {
         let server = try FakeServer()
-        #expect(await code { _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "nope") } == "CollectionNotFound")
+        #expect(await code { _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "nope") } == "CollectionNotFound")
     }
 
     @Test("surfaces DatasetNotFound from getTiles")
     func datasetNotFound() async throws {
         let server = try FakeServer()
-        #expect(await code { _ = try await server.client().searchPlaces(region: sfRegion, dataset: "example.org") } == "DatasetNotFound")
+        #expect(await code { _ = try await server.client().searchNearby(region: sfRegion, dataset: "example.org") } == "DatasetNotFound")
     }
 
     @Test("throws when either antimeridian half is BboxTooLarge", arguments: [("first", "170"), ("second", "-180")])
@@ -113,13 +113,13 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         let server = try FakeServer(
             tilesets: [overture([FakeTile(url: a, records: [record(place("a", "A", [point(15, 175)]))])])],
             tilesFor: { bbox in bbox.hasPrefix(prefix) ? .error(code: "BboxTooLarge", message: "too large") : .tiles([a]) })
-        #expect(await code { _ = try await server.client().searchPlaces(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place") } == "BboxTooLarge", "\(half) half")
+        #expect(await code { _ = try await server.client().searchNearby(region: .bbox(west: 170, south: 10, east: -170, north: 20), dataset: "overturemaps.org", collection: "place") } == "BboxTooLarge", "\(half) half")
     }
 
     @Test("does not subdivide after BboxTooLarge")
     func noSubdivision() async throws {
         let server = try FakeServer(tilesFor: { _ in .error(code: "BboxTooLarge", message: "too large") })
-        _ = try? await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try? await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requests.count == 1)
     }
 }
@@ -128,7 +128,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("defaults to places.atgeo.org")
     func defaultServer() async throws {
         let server = try twoTiles()
-        _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         let u = try #require(server.requests.first)
         #expect(originAndPath(u) == "\(AtgeoTests.defaultServer)/xrpc/org.atgeo.getTiles")
         #expect(param(u, "dataset") == "overturemaps.org")
@@ -143,7 +143,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
             FakeTile(url: "\(base)/tiles/a.json", records: [record(place("a", "A", [point(37.772, -122.412)]))]),
         ])])
         let client = AtgeoClient(server: URL(string: configured)!, transport: server)
-        _ = try await client.searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         _ = try await client.describeService()
         _ = try await client.describeTileset("overture-place")
         _ = try? await client.getPlace(origin: placeOrigin("zzz"))
@@ -205,7 +205,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     ])
     func refused(_ tile: String) async throws {
         let server = try FakeServer(tilesFor: { _ in .tiles([tile, tileURL("a")]) })
-        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 0, failed: 2))   // the fake has no tile a
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tileURL("a")])
     }
@@ -220,7 +220,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
             return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": ["HTTP://127.0.0.1:\(ports.port)/a.json"]]))
         }
         ports.port = server.port
-        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.tileFailures.isEmpty)
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
@@ -243,7 +243,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
             return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": [tile]]))
         }
         ports.port = server.port
-        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0), "\(result.tileFailures.map { "\($0.kind) \(String(describing: $0.error))" })")
         #expect(server.received.filter { !$0.path.contains("/xrpc/") }.map(\.path) == ["/A/B?Q=http://Y"])
     }
@@ -253,7 +253,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
         let server = try FakeServer(tilesets: [overture([
             FakeTile(url: tile, records: [record(place("a", "A", [point(37.772, -122.412)]))]),
         ])])
-        let result = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 0))
         #expect(result.places.map(\.origin) == [placeOrigin("a")])
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tile])
@@ -312,14 +312,14 @@ private func status(_ body: () async throws -> Void) async -> Int? {
     @Test("fetches an IDN host in punycode, as before")
     func idn() async throws {
         let server = try FakeServer(tilesFor: { _ in .tiles(["https://b\u{FC}cher.example/a.json"]) })
-        _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == ["https://xn--bcher-kva.example/a.json"])
     }
 
     @Test("fetches a URL with surrounding spaces and controls trimmed, as fetch does")
     func trimmedFetch() async throws {
         let server = try FakeServer(tilesFor: { _ in .tiles([" \t\(tileURL("a"))\n"]) })
-        _ = try await server.client().searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        _ = try await server.client().searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(server.requestStrings.filter { !$0.contains("/xrpc/") } == [tileURL("a")])
     }
 
@@ -334,7 +334,7 @@ private func status(_ body: () async throws -> Void) async -> Int? {
             return .init(status: 200, body: try! JSONSerialization.data(withJSONObject: ["tiles": tiles]))
         }
         ports.port = server.port
-        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchPlaces(region: sfRegion, dataset: "overturemaps.org", collection: "place")
+        let result = try await AtgeoClient(server: URL(string: "http://127.0.0.1:\(server.port)")!).searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place")
         #expect(result.tiles == .init(fetched: 1, failed: 3))
         #expect(server.received.filter { !$0.path.contains("/xrpc/") }.map(\.path) == ["/ok.json"])
         #expect(server.received.allSatisfy { !$0.headers.contains { $0.name.lowercased() == "authorization" } })

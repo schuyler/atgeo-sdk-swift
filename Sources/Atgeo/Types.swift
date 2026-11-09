@@ -9,8 +9,40 @@ public enum SortMode: String, Sendable, CaseIterable, Codable { case fused, dist
 // Every public type has a public memberwise initializer, which Swift does not synthesize for code outside the
 // module, so an app can build results for its own tests and previews. The client never uses them on a response.
 
-public struct SearchResult: Sendable, Equatable, Codable {
-    public var places: [SearchHit]
+/// Where a hit came from (contract §8, §16): the tiles of a nearby search, or the server's keyword search.
+public enum Via: String, Sendable, Codable { case tiles, keyword }
+
+/// What the server learned during one call (contract §4.11, §16). A call that fails returns no result, so reports
+/// nothing.
+public struct Disclosure: Sendable, Equatable, Codable {
+    /// The keyword was sent.
+    public var keyword: Bool
+    /// The grid, in degrees, of the finest region sent during the call: 0.01 or 1; nil if none was.
+    public var region: Double?
+    public init(keyword: Bool, region: Double?) { self.keyword = keyword; self.region = region }
+}
+
+/// A bounding box in degrees, for the keyword search: a bbox only, never a circle, which would invite the device's
+/// own position as its centre. It is sent snapped outward to whole degrees (contract §16). `west > east` crosses
+/// the antimeridian.
+public struct KeywordRegion: Sendable, Hashable {
+    public var west: Double
+    public var south: Double
+    public var east: Double
+    public var north: Double
+    public init(west: Double, south: Double, east: Double, north: Double) {
+        self.west = west
+        self.south = south
+        self.east = east
+        self.north = north
+    }
+}
+
+/// Whether the combined search's keyword request carries the nearby region, snapped to whole degrees (contract §18).
+public enum KeywordRegionMode: Sendable, Hashable { case none, degree }
+
+public struct NearbySearchResult: Sendable, Equatable, Codable {
+    public var places: [NearbyHit]
     /// `tiles.failed == 0`.
     public var complete: Bool
     public var overview: Bool
@@ -19,33 +51,140 @@ public struct SearchResult: Sendable, Equatable, Codable {
     public var tileFailures: [TileFailure]
     /// The credit for every collection whose data the search's tiles hold (contract §4.10).
     public var attribution: [Attribution]
+    /// What the server learned during this call (contract §4.11): no keyword, and the 0.01 degree grid if the call
+    /// sent a `getTiles` request or attempted a tile fetch, else nil because the cache answered it all.
+    public var disclosed: Disclosure
     public struct TileCounts: Sendable, Equatable, Codable {
         public var fetched: Int
         public var failed: Int
         public init(fetched: Int, failed: Int) { self.fetched = fetched; self.failed = failed }
     }
 
-    public init(places: [SearchHit], complete: Bool, overview: Bool, tiles: TileCounts, tileFailures: [TileFailure] = [], attribution: [Attribution] = []) {
+    public init(
+        places: [NearbyHit], complete: Bool, overview: Bool, tiles: TileCounts, tileFailures: [TileFailure] = [],
+        attribution: [Attribution] = [], disclosed: Disclosure = Disclosure(keyword: false, region: nil)
+    ) {
         self.places = places
         self.complete = complete
         self.overview = overview
         self.tiles = tiles
         self.tileFailures = tileFailures
         self.attribution = attribution
+        self.disclosed = disclosed
     }
 
-    private enum CodingKeys: String, CodingKey { case places, complete, overview, tiles, tileFailures, attribution }
+    private enum CodingKeys: String, CodingKey { case places, complete, overview, tiles, tileFailures, attribution, disclosed }
 
-    /// Written by hand so that a result encoded before `tileFailures` existed still decodes, with none.
+    /// Written by hand so that a result encoded before `tileFailures` or `disclosed` existed still decodes, with
+    /// none and with a disclosure of nothing.
     public init(from decoder: any Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        places = try c.decode([SearchHit].self, forKey: .places)
+        places = try c.decode([NearbyHit].self, forKey: .places)
         complete = try c.decode(Bool.self, forKey: .complete)
         overview = try c.decode(Bool.self, forKey: .overview)
         tiles = try c.decode(TileCounts.self, forKey: .tiles)
         tileFailures = try c.decodeIfPresent([TileFailure].self, forKey: .tileFailures) ?? []
         attribution = try c.decodeIfPresent([Attribution].self, forKey: .attribution) ?? []
+        disclosed = try c.decodeIfPresent(Disclosure.self, forKey: .disclosed) ?? Disclosure(keyword: false, region: nil)
     }
+}
+
+/// The result of `searchByKeyword` (contract §16): the server's matches in its order, with no distance or score.
+public struct KeywordSearchResult: Sendable, Equatable, Codable {
+    public var places: [KeywordHit]
+    /// The union of the attribution of every place, one entry per (dataset, collection), sorted as for a nearby
+    /// search (contract §16, §4.10).
+    public var attribution: [Attribution]
+    public var disclosed: Disclosure
+
+    public init(places: [KeywordHit], attribution: [Attribution], disclosed: Disclosure) {
+        self.places = places
+        self.attribution = attribution
+        self.disclosed = disclosed
+    }
+}
+
+/// The result of `searchNearbyThenByKeyword` (contract §18): the nearby result's fields, with `places` holding both
+/// kinds of hit, the keyword's first.
+public struct FallbackSearchResult: Sendable, Equatable, Codable {
+    public var places: [PlaceHit]
+    /// The nearby search's.
+    public var complete: Bool
+    public var overview: Bool
+    public var tiles: NearbySearchResult.TileCounts
+    public var tileFailures: [TileFailure]
+    /// The union of the nearby and keyword attribution (contract §18).
+    public var attribution: [Attribution]
+    public var disclosed: Disclosure
+
+    public init(
+        places: [PlaceHit], complete: Bool, overview: Bool, tiles: NearbySearchResult.TileCounts,
+        tileFailures: [TileFailure] = [], attribution: [Attribution] = [],
+        disclosed: Disclosure = Disclosure(keyword: false, region: nil)
+    ) {
+        self.places = places
+        self.complete = complete
+        self.overview = overview
+        self.tiles = tiles
+        self.tileFailures = tileFailures
+        self.attribution = attribution
+        self.disclosed = disclosed
+    }
+
+    /// A nearby result as a fallback result, its hits all `.nearby`.
+    init(_ nearby: NearbySearchResult, places: [PlaceHit]? = nil, attribution: [Attribution]? = nil, disclosed: Disclosure? = nil) {
+        self.init(
+            places: places ?? nearby.places.map(PlaceHit.nearby), complete: nearby.complete, overview: nearby.overview,
+            tiles: nearby.tiles, tileFailures: nearby.tileFailures, attribution: attribution ?? nearby.attribution,
+            disclosed: disclosed ?? nearby.disclosed)
+    }
+}
+
+/// A hit of either kind, as `searchNearbyThenByKeyword` returns them.
+public enum PlaceHit: Sendable, Equatable, Codable {
+    case nearby(NearbyHit)
+    case keyword(KeywordHit)
+
+    public var via: Via {
+        switch self {
+        case .nearby: .tiles
+        case .keyword: .keyword
+        }
+    }
+
+    public var origin: String? {
+        switch self {
+        case .nearby(let hit): hit.origin
+        case .keyword(let hit): hit.origin
+        }
+    }
+
+    public var place: JSONObject {
+        switch self {
+        case .nearby(let hit): hit.place
+        case .keyword(let hit): hit.place
+        }
+    }
+
+    public var importance: Int64? {
+        switch self {
+        case .nearby(let hit): hit.importance
+        case .keyword(let hit): hit.importance
+        }
+    }
+
+    public var collection: CollectionKey? {
+        switch self {
+        case .nearby(let hit): hit.collection
+        case .keyword(let hit): hit.collection
+        }
+    }
+
+    /// The place's `name` when it is a string, else nil (contract §8).
+    public var name: String? { place["name"]?.stringValue }
+
+    /// Where the place is (contract §8): the first usable point and the first usable box of `place`.
+    public var location: PlaceLocation { placeLocation(place) }
 }
 
 /// A tile that failed in a search (contract §4.4). `url`, `kind` and `status` are the same in every atgeo SDK;
@@ -116,7 +255,9 @@ public struct PlaceLocation: Sendable, Equatable, Codable {
     public init(point: Point? = nil, bbox: Box? = nil) { self.point = point; self.bbox = bbox }
 }
 
-public struct SearchHit: Sendable, Equatable, Codable {
+public struct NearbyHit: Sendable, Equatable, Codable {
+    /// `.tiles`: the hit came from the tiles of a nearby search (contract §8).
+    public var via: Via { .tiles }
     public var origin: String?
     public var place: JSONObject
     public var importance: Int64?
@@ -139,6 +280,34 @@ public struct SearchHit: Sendable, Equatable, Codable {
 
     /// Where the place is (contract §8): the first usable point and the first usable box of `place`.
     public var location: PlaceLocation { placeLocation(place) }
+}
+
+/// A place the server's keyword search returned (contract §16). It has no distance and no score: the server ranks by
+/// neither, and an app can compute a distance from `location`.
+public struct KeywordHit: Sendable, Equatable, Codable {
+    /// `.keyword`: the hit came from the server's keyword search.
+    public var via: Via { .keyword }
+    public var origin: String?
+    public var place: JSONObject
+    public var importance: Int64?
+    /// The collection the hit belongs to, matched against the attribution the server sent with the place
+    /// (contract §16); nil when none matches.
+    public var collection: CollectionKey?
+
+    public init(origin: String?, place: JSONObject, importance: Int64?, collection: CollectionKey? = nil) {
+        self.origin = origin
+        self.place = place
+        self.importance = importance
+        self.collection = collection
+    }
+
+    /// The place's `name` when it is a string, else nil (contract §8).
+    public var name: String? { place["name"]?.stringValue }
+
+    /// Where the place is (contract §8): the first usable point and the first usable box of `place`.
+    public var location: PlaceLocation { placeLocation(place) }
+
+    private enum CodingKeys: String, CodingKey { case origin, place, importance, collection }
 }
 
 public struct PlaceRecord: Sendable, Equatable, Codable {
@@ -313,6 +482,15 @@ struct TileRecord: Sendable, Equatable {
     var importance: Int64?
 }
 
+/// An element of a `searchPlaces` answer as the lenient reader keeps it (contract §1): `origin` is the value's
+/// `origin` if a string, else the element's `uri` if a string, else nil.
+struct SearchedPlace: Sendable, Equatable {
+    var origin: String?
+    var value: JSONObject
+    var importance: Int64?
+    var attribution: [Attribution]
+}
+
 /// A tile payload as the lenient reader keeps it (contract §1): the usable records, and the `attribution`
 /// when the payload has an array there.
 struct TilePayload: Sendable, Equatable {
@@ -394,6 +572,19 @@ func placeRecord(_ body: JSONValue, origin: String) throws -> PlaceRecord {
     return PlaceRecord(
         origin: origin, place: value, importance: int64(body["importance"]),
         attribution: body["attribution"]?.arrayValue.map(attributionEntries) ?? [])
+}
+
+/// A searchPlaces body: the elements of `places` that are objects with an object `value`, in served order and
+/// with nothing deduplicated. A body that is not an object with a `places` array has no usable list
+/// (contract §1); `url` is not read.
+func searchedPlaces(_ body: JSONValue) throws -> [SearchedPlace] {
+    guard let places = body["places"]?.arrayValue else { throw noUsableBody("searchPlaces response has no places array") }
+    return places.compactMap { p in
+        guard let value = p["value"]?.objectValue else { return nil }
+        return SearchedPlace(
+            origin: value["origin"]?.stringValue ?? p["uri"]?.stringValue, value: value,
+            importance: int64(p["importance"]), attribution: p["attribution"]?.arrayValue.map(attributionEntries) ?? [])
+    }
 }
 
 private func collectionRef(_ v: JSONValue) -> CollectionRef {

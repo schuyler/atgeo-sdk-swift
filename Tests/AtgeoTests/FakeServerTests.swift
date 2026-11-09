@@ -120,11 +120,13 @@ private func object(_ data: Data) throws -> JSONValue { try decodeJSON(data) }
 
     @Test func theFakeRejectsUnknownAndRepeatedParameters() async throws {
         let server = try FakeServer()
-        for path in ["/xrpc/org.atgeo.describeService?q=coffee", "/xrpc/org.atgeo.getPlace?uri=a:b&uri=a:c",
-                     "/xrpc/org.atgeo.getTiles?dataset=d&bbox=-122.4194155,37.77,-122.41,37.78"] {
+        for path in ["/xrpc/org.atgeo.describeService?q=coffee", "/xrpc/org.atgeo.getPlace?uri=a:b&uri=a:c"] {
             let response = try await server.get(URL(string: "https://places.atgeo.org\(path)")!)
             #expect(try object(response.body)["error"] == .string("InvalidRequest"), "\(path)")
         }
+        // A coordinate with more than two decimals is refused as the server refuses it.
+        let precise = try await server.get(URL(string: "https://places.atgeo.org/xrpc/org.atgeo.getTiles?dataset=d&bbox=-122.4194155,37.77,-122.41,37.78")!)
+        #expect(try object(precise.body)["error"] == .string("BboxTooPrecise"))
     }
 
     @Test func delayingTransportCountsRequestsInFlight() async throws {

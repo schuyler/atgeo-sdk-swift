@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import Atgeo
 
-// Port of test/attribution.test.ts: fixtures/attribution-scenarios.json, which pins SearchResult.attribution and
-// SearchHit.collection (contract §4.10 and §8), and the same scenarios with tiles arriving in reverse URL order
+// Port of test/attribution.test.ts: fixtures/attribution-scenarios.json, which pins NearbySearchResult.attribution and
+// NearbyHit.collection (contract §4.10 and §8), and the same scenarios with tiles arriving in reverse URL order
 // (contract §13). The tile bodies need not validate against the lexicons, so the server here is raw, not the
 // validating fake.
 
@@ -68,9 +68,9 @@ struct ScenarioServer: HTTPTransport {
 
 /// A fresh client per scenario: scenarios reuse tile URLs with different bodies, and the tile-list cache is keyed
 /// by dataset, collection and bbox, so a shared client would serve one scenario's lists and tiles to the next.
-private func search(_ s: AttributionScenario, transport: any HTTPTransport) async throws -> SearchResult {
+private func search(_ s: AttributionScenario, transport: any HTTPTransport) async throws -> NearbySearchResult {
     let client = AtgeoClient(server: URL(string: serverBase)!, transport: transport)
-    return try await client.searchPlaces(region: s.region, dataset: s.dataset, collection: s.collection)
+    return try await client.searchNearby(region: s.region, dataset: s.dataset, collection: s.collection)
 }
 
 /// The attribution as the fixture writes it, in JSON terms: a field the entry lacks is a missing key.
@@ -78,7 +78,7 @@ private func jsonTerms(_ a: Attribution) throws -> JSONValue {
     try decodeJSON(JSONEncoder().encode(a))
 }
 
-private func check(_ result: SearchResult, against s: AttributionScenario) throws {
+private func check(_ result: NearbySearchResult, against s: AttributionScenario) throws {
     #expect(try result.attribution.map(jsonTerms) == s.attribution)
 
     // The hits are compared as a multiset of (origin, collection) pairs, order-insensitive. Every hit's collection
@@ -177,15 +177,15 @@ private func check(_ result: SearchResult, against s: AttributionScenario) throw
         ]), status: nil)
     }
 
-    private func search(_ tiles: [AttributionScenario.Tile], text: String? = nil) async throws -> SearchResult {
+    private func search(_ tiles: [AttributionScenario.Tile], text: String? = nil) async throws -> NearbySearchResult {
         let s = AttributionScenario(
             name: "own tile", dataset: "d", collection: nil, region: .bbox(west: -122.42, south: 37.76, east: -122.41, north: 37.78),
             tiles: tiles, attribution: [], hits: [])
         return try await AtgeoClient(server: URL(string: serverBase)!, transport: ScenarioServer(scenario: s))
-            .searchPlaces(region: s.region, dataset: "d", text: text)
+            .searchNearby(region: s.region, dataset: "d", text: text)
     }
 
-    private func collections(_ r: SearchResult) -> [String: CollectionKey?] {
+    private func collections(_ r: NearbySearchResult) -> [String: CollectionKey?] {
         Dictionary(uniqueKeysWithValues: r.places.map { ($0.origin ?? "", $0.collection) })
     }
 

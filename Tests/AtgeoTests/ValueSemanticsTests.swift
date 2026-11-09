@@ -4,7 +4,7 @@ import Testing
 
 // Port of test/frozenPlace.test.ts. The reference freezes the `place` it hands out, because that object is the one its
 // tile cache holds, and copies each attribution entry per answer (contract §8, §9: "a port either hands out
-// immutable values or copies them"). Swift needs neither step: `SearchHit`, `PlaceRecord`, `Attribution` and
+// immutable values or copies them"). Swift needs neither step: `NearbyHit`, `PlaceRecord`, `Attribution` and
 // `JSONValue` are structs and enums, so every answer is the app's own copy, the cache keeps its own, and an app that
 // changes what it was given (it must declare the variable `var` to do so) changes nothing the client holds. Arrays
 // and dictionaries copy on write, so the copy is lazy, and it goes all the way down: unlike the reference's shallow
@@ -33,8 +33,8 @@ private func setup(licenses: [String]? = nil) throws -> (FakeServer, AtgeoClient
     return (fake, fake.client())
 }
 
-private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
-    try #require(try await client.searchPlaces(region: region, dataset: "overturemaps.org", collection: "place").places.first)
+private func firstHit(_ client: AtgeoClient) async throws -> NearbyHit {
+    try #require(try await client.searchNearby(region: region, dataset: "overturemaps.org", collection: "place").places.first)
 }
 
 @Suite("a search hit's place is the app's own value") struct HitPlace {
@@ -84,14 +84,14 @@ private func firstHit(_ client: AtgeoClient) async throws -> SearchHit {
     func nextSearchUnchanged() async throws {
         let licenses = ["https://l.example/1"]
         let (fake, client) = try setup(licenses: licenses)
-        var r1 = try await client.searchPlaces(region: region, dataset: "overturemaps.org", collection: "place")
+        var r1 = try await client.searchNearby(region: region, dataset: "overturemaps.org", collection: "place")
         let original = r1.attribution
         #expect(original.first?.licenses == licenses)
         try #require(!r1.attribution.isEmpty)
         r1.attribution[0].licenses?.append("https://l.example/changed")
         r1.attribution[0].release = "changed"
         r1.attribution.reverse()
-        let r2 = try await client.searchPlaces(region: region, dataset: "overturemaps.org", collection: "place")
+        let r2 = try await client.searchNearby(region: region, dataset: "overturemaps.org", collection: "place")
         #expect(r2.attribution == original)
         #expect(r2.attribution.first?.licenses == licenses)
         // Nothing was refetched to get there: the second search read the cache the first search's app could not reach.

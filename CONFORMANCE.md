@@ -5,9 +5,9 @@ leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode sk
 None of these cases arises from a compliant garganorn server.
 
 The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
-`754aa0917d2839b489f0be3be60ac3b7530a52c7` (the squash merge of schuyler/atgeo-sdk-js#49: match tiers, the overview
-fuzzy drop, `name` and `location`; `test/lexicon/` is unchanged since the previous pin, `2710a14`) and
-garganorn `2009984de02e9b3cbdf0f645213c99ec90ea3406`. CI's `fixtures` job holds them to those pins byte for byte.
+`fc5633103e5ef195c1f9e6e96213e33ce56058ad` (the port contract pinned to the squash merge of schuyler/atgeo-sdk-js#63:
+keyword search, the fallback, the autocompleter, `disclosed`, the 0.8 fuzzy threshold) and garganorn
+`59d21b117f4a01f9f459fc83c2624b53c6cf503a`. CI's `fixtures` job holds them to those pins byte for byte.
 
 ## JSON parsing
 
@@ -105,7 +105,7 @@ a search a `transport` failure. `fetch` refuses the same redirects; before this,
 
 ## Failed tiles
 
-`SearchResult.tileFailures` reports each failed tile in tile URL order with the `url`, `kind` and `status`
+`NearbySearchResult.tileFailures` reports each failed tile in tile URL order with the `url`, `kind` and `status`
 contract §4.4 pins, plus `error`, which `==` and `Codable` leave out. The port's choices where the contract
 leaves them open:
 
@@ -115,7 +115,7 @@ leaves them open:
 - A cached tile whose body fails to parse again is `.decode`; parsing is deterministic, so only a test that
   caches an unparsable body reaches it.
 - Decoding a `TileFailure` whose `kind` is not one of the four, as a later version might write, throws
-  `DecodingError`, and so does decoding the `SearchResult` holding it.
+  `DecodingError`, and so does decoding the `NearbySearchResult` holding it.
 - A cancelled search throws the in-flight tile's own error, as the reference does, rather than report failures.
 - Each failure of a search that returns is logged with `os.Logger` (subsystem `org.atgeo`, category `tiles`) at
   debug level on Apple platforms, in URL order, after the search has finished and just before it returns, kind
@@ -131,7 +131,7 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
 ## Fixtures and their runners
 
 - `normalize.json`, `jaro-winkler.json`: as before.
-- `ranking-scenarios.json` (19 scenarios): run twice, through the internal pipeline and through the client, each
+- `ranking-scenarios.json` (22 scenarios): run twice, through the internal pipeline and through the client, each
   as a search of the scenario's `dataset` and `collection` (`RankingTests`). A scenario with `"overview": true`
   is passed `overview: true` in the first run, and in the second the fake server answers `getTiles` with an
   overview.
@@ -140,9 +140,21 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
   `String.hasPrefix`, which compares grapheme clusters; the case `क` against `कि` pins that, and a test shows
   `hasPrefix` giving the other answer. `TierOrderingTests` checks tier first in each sort mode and the overview
   drop.
-- `lenient-readers.json` (104 cases): `LenientReaderTests` runs all five readers and maps what each keeps into
+- `lenient-readers.json` (124 cases): `LenientReaderTests` runs all six readers, `searchPlaces` among them, and maps what each keeps into
   the fixture's JSON terms by encoding the Swift value, so a nil optional is a missing key. The `tilePayload`
   result is `{records, attribution?}`.
+- `match-tiers-lone-surrogates.json` (4 cases): vendored and not run. A Swift `String` cannot hold a lone
+  surrogate, and the client's JSON parser reads a lone surrogate escape in a body as U+FFFD (contract §14), so a
+  lone surrogate cannot reach the tier function through a body or an app's text. `KeywordTests` only checks that the
+  file is vendored.
+- `qualifying-keywords.json` (23 cases): `KeywordTests` runs the predicate of contract §17 (`qualifies` in
+  `Text.swift`), whose length test counts Unicode scalars, and whose NFC recomposition is Foundation's
+  `precomposedStringWithCanonicalMapping`.
+- `keyword-regions.json` (72 cases): each `bbox` is the region of a `searchByKeyword` call to the fake, which
+  refuses what the real server refuses (`BboxTooPrecise`, `InvalidBbox`); the one request's `bbox` must equal
+  `sent` and match the plain-integer pattern. Written with `String(Int)`, so there is no `-0`.
+- `keyword-fallback.json` (7 scenarios): `KeywordFallbackTests` against a raw, request-capturing server, a fresh
+  client per scenario; the origins in order, `disclosed`, and the `searchPlaces` request's exact parameters.
 - `attribution-scenarios.json` (12 scenarios): `AttributionScenarioTests`, with contract §13's rules: a fresh
   client per scenario, a raw server that lists the scenario's tiles unsorted and serves each tile verbatim, the
   default error body for a tile with a status and no body, no text and the default sort. Hits are compared as a
@@ -157,7 +169,7 @@ CI platform (Linux, current macOS and macOS 14), including the Final_Sigma abbre
 
 ## Name and location
 
-`SearchHit` and `PlaceRecord` have `name` and `location` (contract §5, §8, §9). In Swift they are computed
+`NearbyHit` and `PlaceRecord` have `name` and `location` (contract §5, §8, §9). In Swift they are computed
 properties over `place`, not stored fields, so the memberwise initializers and the synthesized or hand-written
 `Codable` forms are unchanged, and a value built by an app (or decoded from before these existed) has them too.
 `location` reads `place["locations"]` as the client does to rank and filter, on each access. `PlaceLocation`,
@@ -181,7 +193,7 @@ U+0020 by scalar and tokens are compared as UTF-16 arrays, never as `String`.
 ## Copies of what you're handed
 
 Contract §8 and §9 ask a port to hand out immutable values or copies of the place and the attribution. Swift
-does neither explicitly: `SearchHit`, `PlaceRecord`, `Attribution`, `CollectionKey` and `JSONValue` are values,
+does neither explicitly: `NearbyHit`, `PlaceRecord`, `Attribution`, `CollectionKey` and `JSONValue` are values,
 and arrays and dictionaries copy on write, so an app that changes an answer changes its own copy. This goes
 deeper than the reference's shallow `Object.freeze`: nested objects and arrays are the app's too. The tests
 change an answer's `licenses`, release, order and nested place values and look at the next search and the next
@@ -189,7 +201,7 @@ change an answer's `licenses`, release, order and nested place values and look a
 
 ## Required dataset
 
-`dataset` is a non-optional `String` in `searchPlaces(region:dataset:text:collection:sort:)`, so contract §4.1's
+`dataset` is a non-optional `String` in `searchNearby(region:dataset:text:collection:sort:)`, so contract §4.1's
 "missing or non-string dataset" and "collection without a dataset" argument errors cannot arise: the call does not
 compile. There is no `AtgeoArgumentError` case for them. An empty string is sent as given.
 
@@ -207,3 +219,41 @@ attribution once, when the tile is fetched, and keeps it in the cache entry next
 still its body length, so the budget does not count it; the lists are small (a few entries per tile) and sit
 outside the budget, like the memo. Results are identical either way: a cached tile's records still carry the
 attribution of the tile they came from.
+
+## Keyword search
+
+`searchByKeyword`, `searchNearbyThenByKeyword` and `autocompleteByKeyword` follow contract §16 to §19 and the
+Swift spec. Where the contract leaves a choice, or Swift's types settle it:
+
+- The argument errors the types rule out cannot arise: `keyword` is a `String`, `keywordRegion` is an enum and a
+  keyword region is a bbox, so there is no circle to refuse. A malformed `KeywordRegion` is
+  `AtgeoArgumentError.invalidRegion("invalid bbox")`, and `.similarity` with an empty normalized keyword in
+  `searchNearbyThenByKeyword` is `.similarityRequiresText`, both before any request.
+- `FallbackSearchResult` holds the nearby result's `complete`, `overview`, `tiles`, `tileFailures`, `attribution`
+  and `disclosed` next to its mixed `places` (`PlaceHit`), as contract §18 step 7 has it; the Swift spec's sketch
+  lists fewer fields. `KeywordSearchResult.attribution` is `[Attribution]`, the type the nearby result already uses.
+- `via` is a computed property of `NearbyHit` and `KeywordHit`, `.tiles` and `.keyword`, so the types keep their
+  memberwise initializers and a hit encoded before `via` existed decodes. It is not part of the encoded form.
+- A `NearbySearchResult` encoded before `disclosed` existed decodes with `Disclosure(keyword: false, region: nil)`.
+- `searchByKeyword`, the fallback's keyword request and the autocompleter's calls are not cached; nothing from the
+  answer enters a cache.
+- A request whose task is already cancelled is never handed to the transport: `Task.checkCancellation()` runs
+  immediately before every `transport.get` (`fetchBody`, and the tile fetch), and throws `CancellationError`. A fully
+  cached `searchNearby` still completes though cancelled.
+- The autocompleter runs each call in a `Task` it cancels when the next call arrives. A superseded call throws
+  `CancellationError` whatever its task threw, and also when its task returned an answer after the supersession,
+  since the contract has a superseded call end with the supersession outcome. A caller whose task is already
+  cancelled when it calls gets `CancellationError` with no request, after the previous call has been superseded;
+  a caller that cancels mid-flight gets `CancellationError` or `URLError(.cancelled)`, whichever the request threw.
+- A failure of the keyword request in the fallback loses the nearby result, and the keyword may already have
+  reached the server; no `disclosed` is attached to the error (contract §18, step 8).
+- The keyword is sent exactly as passed. It is percent-encoded like any parameter, with `+` as `%2B`.
+- The privacy trade-off is the contract's (§19), stated in the README: every method whose name contains `Keyword`
+  may send the keyword, and the autocompleter sends every qualifying prefix as typed. The server keeps no log of
+  what it receives, as garganorn is designed, and an operator who is hostile can record it. The autocompleter does
+  not debounce; whether to debounce is the app's choice.
+
+## Ranking thresholds
+
+Contract §7: a tier 1 hit is kept at any score, a tier 2 hit needs 0.8, and a query whose tokens all fold away
+needs 0.6. `ScoreThresholds` (`MatchTierTests`) pins the three, using the contract's own examples.

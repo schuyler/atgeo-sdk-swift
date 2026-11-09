@@ -1,6 +1,6 @@
 # Atgeo
 
-A Swift client for the atgeo gazetteer served by [garganorn](https://github.com/schuyler/garganorn), which searches places without telling the server what you searched for.
+A Swift client for the atgeo gazetteer served by [garganorn](https://github.com/schuyler/garganorn), which searches nearby places without telling the server what you searched for, and says so in the method name when a search might.
 
 It's a port of [@atgeo/client](https://github.com/schuyler/atgeo-sdk-js), the TypeScript reference, and behaves the same way: same requests on the wire, same filtering, scoring and ranking. It runs on iOS 15, macOS 12, tvOS 15, watchOS 8 and visionOS 1 or later, and on Linux, needs a Swift 6 toolchain, and has no dependencies beyond Foundation.
 
@@ -11,7 +11,7 @@ import Atgeo
 
 let atgeo = AtgeoClient()
 
-let result = try await atgeo.searchPlaces(
+let result = try await atgeo.searchNearby(
     region: .circle(lat: 39.9526, lon: -75.1652, radius: 1000),  // meters
     dataset: "overturemaps.org",
     text: "Starbux"
@@ -21,6 +21,8 @@ for hit in result.places {
     print(hit.name ?? "-", Int(hit.distance), hit.score ?? 0, hit.origin ?? "-")
 }
 ```
+
+`searchNearby` never sends your text. The methods with `Keyword` in their name may, and every result has a `disclosed` that says what the server learned during that call; see [Keyword search](#keyword-search) and [Privacy](#privacy).
 
 Credit the data: `result.attribution` lists the collections whose data the search used, and each hit's `collection` says which one it came from. Misspellings are fine; matching is fuzzy (words that match exactly rank first), and that finds the Starbucks around Philadelphia's City Hall. The public server at places.atgeo.org covers the whole world. If `result.complete` is `false`, some tiles failed to load and the results are partial. If `result.overview` is `true`, the region was too big to search in full and you got only its most important places; see [Overview answers](#overview-answers).
 
@@ -58,7 +60,7 @@ Point `server` at your own garganorn to run against your own data; see [Server r
 
 Every method is `async throws`. Cancel the calling `Task` to abort one.
 
-### `searchPlaces(region:dataset:text:collection:sort:) -> SearchResult`
+### `searchNearby(region:dataset:text:collection:sort:) -> NearbySearchResult`
 
 | Parameter | Meaning |
 |---|---|
@@ -87,16 +89,18 @@ A bbox with `west > east` crosses the antimeridian. A place with a point locatio
 The result:
 
 ```swift
-public struct SearchResult {
-    public var places: [SearchHit]
+public struct NearbySearchResult {
+    public var places: [NearbyHit]
     public var complete: Bool        // false if any tile failed to load
     public var overview: Bool        // true if the server answered with its coarse overview; see below
     public var tiles: TileCounts     // .fetched and .failed
     public var tileFailures: [TileFailure]  // each failed tile, in tile URL order; see Errors
     public var attribution: [Attribution]  // who to credit; see Attribution, below
+    public var disclosed: Disclosure       // what the server learned during this call; see Privacy
 }
 
-public struct SearchHit {
+public struct NearbyHit {
+    public var via: Via { get }      // .tiles
     public var origin: String?       // the place's identity: place.origin, else the tile record's uri, else nil
     public var place: JSONObject     // the record value, exactly as served
     public var name: String? { get } // place["name"] when it is a string, else nil
@@ -113,13 +117,13 @@ public struct PlaceLocation {            // Sendable, Equatable and Codable
 }
 ```
 
-`name` and `location` are computed from `place` each time you read them, so `SearchHit` and `PlaceRecord` keep their memberwise initializers and their `Codable` form. `location` is what the client itself reads to rank and filter, in the lexicon's field names: coordinates can be strings or numbers on the wire, and you get `Double`s. A box with `west > east` crosses the antimeridian, and is given as it was read. A place with no usable point or box has `nil` for it. `PlaceRecord` has both too.
+`name` and `location` are computed from `place` each time you read them, so `NearbyHit` and `PlaceRecord` keep their memberwise initializers and their `Codable` form. `location` is what the client itself reads to rank and filter, in the lexicon's field names: coordinates can be strings or numbers on the wire, and you get `Double`s. A box with `west > east` crosses the antimeridian, and is given as it was read. A place with no usable point or box has `nil` for it. `PlaceRecord` has both too.
 
 `JSONObject` is `[String: JSONValue]`, and `JSONValue` is an enum of the six JSON types, with `stringValue`, `doubleValue`, `boolValue`, `arrayValue` and `objectValue` accessors and subscripts by key and index, so `hit.place["locations"]?[0]?["latitude"]?.stringValue` reads what you'd expect. Nothing about a place is decoded into a Swift type: `place` is the gazetteer's value untouched, every key as served. Importance lives on `hit.importance`, identity on `hit.origin`, and the name and location the client reads are on `hit.name` and `hit.location`.
 
-Every result type has a public initializer, so you can build a `SearchResult` or a `PlaceRecord` for your own tests and SwiftUI previews without a server. They're `Codable` too, so a saved place can be a `PlaceRecord` written with `JSONEncoder`. One catch: a number too large for a double, which no garganorn sends, is read as infinity (as JavaScript reads it), and `JSONEncoder` refuses to write infinity unless you set its `nonConformingFloatEncodingStrategy`.
+Every result type has a public initializer, so you can build a `NearbySearchResult` or a `PlaceRecord` for your own tests and SwiftUI previews without a server. They're `Codable` too, so a saved place can be a `PlaceRecord` written with `JSONEncoder`. One catch: a number too large for a double, which no garganorn sends, is read as infinity (as JavaScript reads it), and `JSONEncoder` refuses to write infinity unless you set its `nonConformingFloatEncodingStrategy`.
 
-When `text` is given, places scoring below 0.6 are dropped. The rest rank in two tiers, whatever the sort mode: a place with a name (its own or a variant) that has every word of the query as the start of one of its words (apostrophes ignored, other punctuation splitting words, so `mcdonalds` finds `McDonald's` and `st louis` finds `St. Louis`) comes before one that matches only fuzzily. Within a tier, the sort mode decides.
+When `text` is given, a place with a name (its own or a variant) that has every query word as the start of one of its words is kept at any score, and any other place needs a score of at least 0.8 (or 0.6, for a query whose words all fold away, such as `&`). Places rank in two tiers, whatever the sort mode: a place with a name (its own or a variant) that has every word of the query as the start of one of its words (apostrophes ignored, other punctuation splitting words, so `mcdonalds` finds `McDonald's` and `st louis` finds `St. Louis`) comes before one that matches only fuzzily. Within a tier, the sort mode decides.
 
 #### Attribution
 
@@ -154,13 +158,31 @@ When a region is too large for the server's regular tile budget and the collecti
 
 A place can be stored in several tiles. The client keeps one hit per origin (or per `uri`, for a record with no origin); when the copies differ, the copy from the lowest tile URL wins. Garganorn's copies are byte-identical, so this only matters for other producers' tilesets. The [JS README](https://github.com/schuyler/atgeo-sdk-js#places-that-appear-in-more-than-one-tile) has the long version.
 
+### Keyword search
+
+These methods send the keyword to the server, which matches it against place names for you: a place matches when each word of the keyword begins a word of one of its names, ignoring case and accents. That is a different trade-off from `searchNearby`, which never sends your text and matches on the device; it can find a place anywhere in the dataset, not only in the tiles of one region. Every one of them is named with `Keyword`, and nothing else sends text.
+
+```swift
+public func searchByKeyword(keyword: String, dataset: String, collection: String? = nil, region: KeywordRegion? = nil) async throws -> KeywordSearchResult
+public func searchNearbyThenByKeyword(region: Region, dataset: String, keyword: String, keywordRegion: KeywordRegionMode, collection: String? = nil, sort: SortMode = .fused) async throws -> FallbackSearchResult
+public nonisolated func autocompleteByKeyword(dataset: String, collection: String? = nil, region: KeywordRegion? = nil) throws -> KeywordAutocomplete
+```
+
+**`searchByKeyword`** makes one `org.atgeo.searchPlaces` request: the dataset, the collection if given, the keyword exactly as you passed it, and, if you gave a `KeywordRegion` (a bounding box only, never a circle), that box snapped outward to whole degrees. The hits are the server's, in its order (at most 20, most notable first), as `KeywordHit`s with `via == .keyword`, `origin`, `place`, `name`, `location`, `importance` and `collection`; there is no `distance` or `score`, and you can compute a distance from `location`. `attribution` is the union of the places' attribution, and `disclosed` is `Disclosure(keyword: true, region: 1)` with a region and `region: nil` without. Nothing is cached. A keyword with no word of two or more characters is not an argument error: the server refuses it with `AtgeoError` code `KeywordRequired`.
+
+**`searchNearbyThenByKeyword`** runs `searchNearby` with the keyword as its text, and sends the keyword only if no nearby hit matches it word for word (match tier 1) and it could qualify. `keywordRegion` has no default, because whether the region goes along is your decision every time: `.degree` sends the nearby region as a box snapped to whole degrees, and `.none` sends no region. The keyword's hits come first, then the nearby hits it doesn't repeat, each in a `PlaceHit` (`.nearby` or `.keyword`) that carries its `via`. A keyword the server refuses with `KeywordRequired` leaves you the nearby result, with `disclosed.keyword` true. If the keyword request fails any other way, the call throws and the nearby result is lost, and the keyword may already have reached the server even though no result says so: the error carries no `disclosed`.
+
+**`autocompleteByKeyword`** returns a `KeywordAutocomplete` for one text field; make one per field. Its `searchByKeyword(_:)` sends every keyword that qualifies exactly as typed, prefixes included, and a keyword that can't qualify (a single character, say) resolves with an empty result and sends nothing. The server keeps no log of what it receives, as garganorn is designed, and an operator who is hostile can record it. Debouncing reduces how many prefixes go out; it is your choice, and the autocompleter does not debounce. Each call supersedes the previous call on the same autocompleter, which throws `CancellationError` although its own task was not cancelled, so ignore an autocompleter's `CancellationError` and show the newest call's answer. Cancelling the caller's task cancels its request. A keyword the server refuses with `KeywordRequired` resolves empty with `disclosed.keyword` true.
+
+A request whose task is already cancelled is never handed to the transport, yours included.
+
 ### `getPlace(origin:) -> PlaceRecord`
 
 Returns a `PlaceRecord` with `origin`, `place`, `name`, `location`, `importance` and `attribution` (a `[Attribution]`), as in a hit. Pass the `origin` of a hit. If a cached tile holds the place, no request is made, and `attribution` is that tile's, from the lowest tile URL if several hold the place; otherwise the client asks the server (`org.atgeo.getPlace`) directly and `attribution` is the response's. Either way it's a list in the order the server sent it, duplicates included, empty if there is none.
 
 #### Changing what you're handed
 
-The `place` of a hit, and the answers to `getPlace(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `SearchHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
+The `place` of a hit, and the answers to `getPlace(origin:)`, can be the very value the tile cache holds. In Swift that's fine: `NearbyHit`, `KeywordHit`, `PlaceRecord`, `Attribution`, `JSONValue` and the rest are structs and enums, so what you get is your own copy, and changing it (you'd have to declare it `var`) changes nothing the client holds or hands out later. That goes all the way down: unlike the JavaScript client, which freezes a place shallowly, a nested object or array is yours too.
 
 ### `describeTileset(_ slug:) -> Tileset`
 
@@ -175,7 +197,7 @@ Every field of the describe types is optional, and a field the server drops or r
 ### Errors
 
 - `AtgeoError` has a `code`, a `message` and the HTTP `status`, which tells a request the server refused (4xx) from one it failed to answer (5xx) without matching on codes. Its `localizedDescription` is the message followed by the code in parentheses, and `AtgeoArgumentError`'s says what was wrong with the arguments. A non-2xx response from the server becomes an `AtgeoError` whose `code` and message come from the server's JSON error body; if there isn't one, the code is `HttpError`. Apart from `HttpError`, every code comes from the server: for example `PlaceNotFound`, `TilesetNotFound`, `DatasetNotFound`, `CollectionNotFound`, `BboxTooLarge`, or `InvalidRequest`.
-- `searchPlaces` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `south > north`, negative radius) and for `.similarity` without text, before any request.
+- `searchNearby` throws `AtgeoArgumentError` for an invalid region (non-finite or out-of-range coordinates, `south > north`, negative radius) and for `.similarity` without text, before any request.
 - A 2xx body that isn't JSON, or has nothing usable in it (no `tiles` list, no `value` object for `getPlace(origin:)`; the older `{uri, record}` shape counts as having none), throws `DecodingError`.
 - A failed `getTiles` request fails the whole search. A failed tile does not: that tile is skipped, not retried, and listed in `tileFailures`, which `tiles.failed` counts, and `complete` is `false`. A tile URL that isn't an absolute `http` or `https` URL, or that carries a username or password, is a failed tile too, and never reaches the transport, yours included.
 - A `TileFailure` has the tile's `url` as the server gave it, a `kind` saying where it failed, the HTTP `status` for `.status`, and the `error` itself. The kinds: `.refused` (the URL check above; no request, and the error is `URLError(.unsupportedURL)`), `.status` (a non-2xx answer; the error is its `AtgeoError`), `.decode` (a 2xx whose body isn't a tile payload) and `.transport` (whatever the transport threw: a network error, a timeout, a body over the cap, or anything your own transport throws, an `AtgeoError` included). `url`, `kind` and `status` are what every atgeo SDK reports; `error` is Swift's own, so `==` and `Codable` leave it out. The client always sets it; it's `nil` only in a failure decoded from JSON or one you built with `nil` yourself. Decoding a `kind` this version doesn't know throws. A cancelled search throws rather than listing its tiles as failed.
@@ -184,7 +206,9 @@ Every field of the describe types is optional, and a field the server drops or r
 
 ## Privacy
 
-Your search text never leaves the device. Neither does your precise location.
+`searchNearby` never sends your search text or your precise location. Text leaves the device only through the methods with `Keyword` in their name, which send exactly what is described under [Keyword search](#keyword-search): the keyword, and a region only as a box of whole degrees, roughly 111 km of latitude. Every result's `disclosed` says what the server learned during that call: `keyword` is true if a keyword request went out, and `region` is the grid, in degrees, of the finest region sent (0.01 for the tiles of a nearby search, 1 for a keyword region) or `nil` for none. A call answered entirely from cache reports no region, though an earlier call told the server about the area.
+
+The rest of this section is about `searchNearby`.
 
 To search, the client asks the server which tiles cover an area, downloads those tiles, and does the matching, filtering, and ranking locally. The only location a search sends is a bounding box (two across the antimeridian), snapped outward to a 0.01 degree grid (roughly 1 km of latitude) before it goes out; alongside it go the search's dataset and, if it has one, its collection. Your exact region is used only on the device, to filter and to compute distances.
 
@@ -194,12 +218,13 @@ What does go on the wire:
 - Requests for the tile URLs the server returned, exactly as served, minus any already in the cache. So the server can tell which of those tiles this client fetched before (that you searched near here recently) but nothing finer than the tiles themselves.
 - `describeService` and `describeTileset`, only if you call them.
 - `getPlace(origin:)` on a cache miss sends the origin of the place you asked for.
+- `org.atgeo.searchPlaces`, only from a `Keyword` method, with the dataset, the collection if any, the keyword and, if there is a region, its whole-degree box.
 
 The server also sees your IP address and whatever headers your transport sends. The default one sets `Accept: application/json`, `User-Agent: atgeo-client-swift` and `Accept-Language: *`, the same on every device. Left to itself, `URLSession` on Apple platforms would send a User-Agent naming your app, its build, and the CFNetwork and Darwin versions (so the OS version), and an Accept-Language listing the user's languages. It still adds headers of its own, such as `Accept-Encoding`, which vary by platform. A transport you supply sends whatever its stack does. Snapping hides where in a ~1 km cell you are; it doesn't hide the cell.
 
 ## Caching
 
-`getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `getPlace(origin:)` checks cached tiles before asking the server.
+Keyword requests are not cached. `getTiles` responses and the service description are cached for an hour. Tiles are cached in memory, least recently used out first, up to `cacheBudgetBytes` (measured as the size of each tile's response body). Searching a region again while its tile list and tiles are warm makes no requests at all. `getPlace(origin:)` checks cached tiles before asking the server.
 
 The budget counts each tile's response body, and the bodies are what the cache keeps, so the budget is close to what it costs: 1.0 to 1.4 times, measured below, the rest being an index for `getPlace(origin:)` and allocator overhead. Parsed, a tile takes about four times its body size, so only the latest search's tiles stay parsed, outside the budget. Searching the same region again with different text, as a user types, parses nothing. A tile from an older search is parsed again from its body when a search or `getPlace(origin:)` reaches it, which takes about 9 ms for an 870 KiB tile on a Linux server, or 17 ms when most of its names aren't ASCII and have to go through Unicode normalization.
 
@@ -240,13 +265,13 @@ There's also an end-to-end run against a live server, which isn't part of `swift
 ATGEO_SERVER=http://localhost:8000 swift run -c release atgeo-e2e
 ```
 
-It also checks `maxTiles`, the search's attribution, hit collections and `getPlace(origin:)`'s attribution, so it fails against a server that predates [schuyler/garganorn#27](https://github.com/schuyler/garganorn/issues/27). Until that's deployed, it can't pass; that is expected, and the checks stay.
+It also checks the keyword methods against what they disclose, `maxTiles`, the search's attribution, hit collections and `getPlace(origin:)`'s attribution, so it fails against a server that predates [schuyler/garganorn#27](https://github.com/schuyler/garganorn/issues/27). Until that's deployed, it can't pass; that is expected, and the checks stay.
 
 It takes the same environment variables as the reference's `scripts/e2e.ts`: `ATGEO_SERVER` (default `http://localhost:8000`), `ATGEO_DATASET` (default `openstreetmap.org`), `ATGEO_COLLECTION` (default none), and `ATGEO_REGION` as `lat,lon,radius` in meters (default `43.0,-71.45,3000`, Manchester, NH). It prints a line per step, exits non-zero on the first failure, and finishes by timing the parser on the largest tile it fetched.
 
 ## Server requirements
 
-The client needs a garganorn that serves `org.atgeo.getTiles`, `getPlace`, `describeService` and `describeTileset`, and it follows the tile URLs `getTiles` returns as-is.
+The client needs a garganorn that serves `org.atgeo.getTiles`, `getPlace`, `describeService` and `describeTileset`, plus `searchPlaces` for the keyword methods, and it follows the tile URLs `getTiles` returns as-is.
 
 ## License
 

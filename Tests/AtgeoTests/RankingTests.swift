@@ -55,7 +55,7 @@ private func hit(_ origin: String?) -> TileRecord {
     return TileRecord(value: value)
 }
 
-private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
+private func origins(_ hits: [NearbyHit]) -> [String?] { hits.map(\.origin) }
 
 /// The fixture through contract §4.6 to §4.9 (no network), as a search of the scenario's dataset and collection
 /// (contract §8).
@@ -74,7 +74,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
     }
 
     @Test func fixtureIsTheVendoredOne() throws {
-        #expect(try scenarios().count == 19)
+        #expect(try scenarios().count == 22)
     }
 
     // Addendum E: a literal (b.importance ?? 0) - (a.importance ?? 0) traps here.
@@ -134,7 +134,7 @@ private func origins(_ hits: [SearchHit]) -> [String?] { hits.map(\.origin) }
         var tilesFor: (@Sendable (String) -> TilesForAnswer)?
         if s.overview { tilesFor = { _ in TilesForAnswer.body(body) } }
         let server = try FakeServer(tilesets: [overture([FakeTile(url: url, records: s.records)])], tilesFor: tilesFor)
-        let places = try await server.client().searchPlaces(region: s.region, dataset: s.dataset, text: s.text, collection: s.collection, sort: s.sort).places
+        let places = try await server.client().searchNearby(region: s.region, dataset: s.dataset, text: s.text, collection: s.collection, sort: s.sort).places
         let got = places.compactMap(\.origin)
         for (k, wanted) in s.top {
             for origin in wanted { #expect(got.prefix(k).contains(origin), "\(origin) in top \(k) of \(got)") }
