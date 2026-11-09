@@ -412,7 +412,10 @@ func fetchBody(_ transport: any HTTPTransport, _ url: URL) async throws -> Data 
     // A request whose task is already cancelled is never handed to the transport, which may ignore cancellation
     // and send it (contract §11): the fallback's keyword, say, after the caller cancelled between its two halves.
     try Task.checkCancellation()
-    return try checkedBody(try await transport.get(url))
+    let response = try await transport.get(url)
+    // A transport that ignores cancellation may return 200 after the caller cancelled (contract §11).
+    try Task.checkCancellation()
+    return try checkedBody(response)
 }
 
 /// The body of a 2xx response; for any other status, the `AtgeoError` the body describes.

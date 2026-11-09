@@ -9,10 +9,12 @@ public actor KeywordAutocomplete {
     private let dataset: String
     private let collection: String?
     private let region: KeywordRegion?
-    /// The previous call's task, which the next call cancels.
-    private var previous: Task<KeywordSearchResult, any Error>?
+    /// The previous call's work, which the next call cancels.
+    private var previous: Task<Void, Never>?
     /// Counts calls, so a call can tell that a later one superseded it.
     private var generation = 0
+    /// The current call's caller, waiting. Whoever takes it resumes it, so it is resumed exactly once.
+    private var waiter: CheckedContinuation<KeywordSearchResult, any Error>?
 
     init(client: AtgeoClient, dataset: String, collection: String?, region: KeywordRegion?) {
         self.client = client
@@ -31,53 +33,75 @@ public actor KeywordAutocomplete {
     /// A call supersedes the previous call on this autocompleter, which throws `CancellationError`, although its
     /// caller's task was not cancelled: a `CancellationError` from an autocompleter's call means "superseded", and
     /// the app ignores that answer and shows the newest call's. A caller that cancels its own call cancels its
-    /// request, and gets `CancellationError` or `URLError(.cancelled)`; a call whose task is already cancelled
-    /// sends nothing.
+    /// request, and gets `CancellationError` at once, though a transport that ignores cancellation is still
+    /// working; a call whose task is already cancelled sends nothing, and throws `CancellationError` unless the
+    /// keyword cannot qualify, when it resolves empty because there is nothing to cancel (contract §19).
     ///
     /// - Throws: `AtgeoError` as `searchByKeyword` does, except that `KeywordRequired`, a keyword the server
     ///   refused although it qualified, resolves with an empty result whose `disclosed.keyword` is true, since the
     ///   keyword went out.
     public func searchByKeyword(_ keyword: String) async throws -> KeywordSearchResult {
-        // Supersede the previous call, if any, so that it ends with `CancellationError`.
+        // Supersede the previous call, if any: its caller is told now, whatever its transport is doing.
+        finish(.failure(CancellationError()))
         previous?.cancel()
         generation += 1
         let mine = generation
-        // A call whose caller has already cancelled it sends nothing.
-        try Task.checkCancellation()
-
-        // The caller's `await` sits outside the task that does the work, so the work can be cancelled on its own.
-        let client = self.client, dataset = self.dataset, collection = self.collection, region = self.region
-        let work = Task {
-            try await Self.answer(keyword, client: client, dataset: dataset, collection: collection, region: region)
-        }
-        previous = work
-        defer { if generation == mine { previous = nil } }
-
-        let result: KeywordSearchResult
-        do {
-            // The caller's own cancellation cancels the work, and so the request (contract §11).
-            result = try await withTaskCancellationHandler {
-                try await work.value
-            } onCancel: {
-                work.cancel()
-            }
-        } catch {
-            // Superseded, whatever the work threw: `URLError(.cancelled)`, or an injected transport's own error.
-            if generation != mine { throw CancellationError() }
-            throw error
-        }
-        // The work may not have noticed that it was cancelled, as a transport that ignores cancellation does not.
-        if generation != mine { throw CancellationError() }
-        return result
-    }
-
-    /// One call's work. A keyword that cannot qualify answers with nothing and sends nothing.
-    private static func answer(
-        _ keyword: String, client: AtgeoClient, dataset: String, collection: String?, region: KeywordRegion?
-    ) async throws -> KeywordSearchResult {
+        // Nothing is sent for a keyword that cannot qualify, so there is nothing to cancel (contract §19).
         guard qualifies(keyword) else {
             return KeywordSearchResult(places: [], attribution: [], disclosed: Disclosure(keyword: false, region: nil))
         }
+        // A call whose caller has already cancelled it sends nothing.
+        try Task.checkCancellation()
+
+        // The work runs in a task of its own, so it can be cancelled on its own, and reports to the waiter.
+        let client = self.client, dataset = self.dataset, collection = self.collection, region = self.region
+        previous = Task {
+            let outcome: Result<KeywordSearchResult, any Error>
+            do {
+                outcome = .success(try await Self.answer(keyword, client: client, dataset: dataset, collection: collection, region: region))
+            } catch {
+                outcome = .failure(error)
+            }
+            await self.finish(outcome, call: mine)
+        }
+        // The caller's own cancellation cancels the work, and so the request (contract §11).
+        return try await withTaskCancellationHandler {
+            try await self.wait(call: mine)
+        } onCancel: {
+            // Synchronous and not isolated, so it hops onto the actor, and may run before `wait` has stored the caller.
+            Task { await self.cancel(call: mine) }
+        }
+    }
+
+    /// Stores the caller of call `mine` until `finish` resumes it.
+    private func wait(call mine: Int) async throws -> KeywordSearchResult {
+        try await withCheckedThrowingContinuation { continuation in
+            guard generation == mine else { return continuation.resume(throwing: CancellationError()) }
+            waiter = continuation
+            // Already cancelled, so `cancel(call:)` may have run before the caller was stored.
+            if Task.isCancelled { cancel(call: mine) }
+        }
+    }
+
+    /// The caller of call `mine` cancelled it.
+    private func cancel(call mine: Int) {
+        guard generation == mine else { return }
+        previous?.cancel()
+        finish(.failure(CancellationError()))
+    }
+
+    /// Resumes the waiting caller, if call `mine` (default: the current one) still has one.
+    private func finish(_ outcome: Result<KeywordSearchResult, any Error>, call mine: Int? = nil) {
+        if let mine, mine != generation { return }
+        guard let continuation = waiter else { return }
+        waiter = nil
+        continuation.resume(with: outcome)
+    }
+
+    /// One call's work.
+    private static func answer(
+        _ keyword: String, client: AtgeoClient, dataset: String, collection: String?, region: KeywordRegion?
+    ) async throws -> KeywordSearchResult {
         do {
             return try await client.searchByKeyword(keyword: keyword, dataset: dataset, collection: collection, region: region)
         } catch let error as AtgeoError where error.code == "KeywordRequired" {

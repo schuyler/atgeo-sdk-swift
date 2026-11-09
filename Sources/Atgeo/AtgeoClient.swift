@@ -206,6 +206,8 @@ public actor AtgeoClient {
                         try Task.checkCancellation()
                         let response: HTTPResponse
                         do { response = try await transport.get(u) } catch { return .failed(try tileFailure(url, .transport, error)) }
+                        // A transport that ignores cancellation may return 200 after the search was cancelled.
+                        try Task.checkCancellation()
                         let body: Data
                         do { body = try checkedBody(response) } catch {
                             return .failed(try tileFailure(url, .status, error, status: response.status))
