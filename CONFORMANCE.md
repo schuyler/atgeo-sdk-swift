@@ -4,10 +4,12 @@ Where this port's behaviour differs from the TypeScript reference at the margins
 leaves open (`atgeo-sdk-js/docs/port-contract.md` §5, §14), and the Unicode skew list spec §6 asks for.
 None of these cases arises from a compliant garganorn server.
 
-The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: atgeo-sdk-js
-`fc5633103e5ef195c1f9e6e96213e33ce56058ad` (the port contract pinned to the squash merge of schuyler/atgeo-sdk-js#55 (97c776b):
-keyword search, the fallback, the autocompleter, `disclosed`, the 0.8 fuzzy threshold) and garganorn
-`59d21b117f4a01f9f459fc83c2624b53c6cf503a`. CI's `fixtures` job holds them to those pins byte for byte.
+The fixtures and lexicons are vendored at the commits named in `Tests/AtgeoTests/Fixtures/SOURCE`: the fixtures and
+the lexicon copy in `test/lexicon` from atgeo-sdk-js `5ce94485bfc0ba1e2c91acdd9abcc6660c4fb6b7` (the squash merge of
+schuyler/atgeo-sdk-js#67), and those lexicons are garganorn `59d21b117f4a01f9f459fc83c2624b53c6cf503a`'s. That
+port contract carries keyword search, the fallback, the autocompleter and `disclosed` (#55, 97c776b), and
+`KeywordRequired` as no answer, no already-aborted request reaching the transport, and the tier-1-kept, 0.8 tier-2
+threshold (#63, 3d68e5e). CI's `fixtures` job holds the files to those pins byte for byte.
 
 ## JSON parsing
 
