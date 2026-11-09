@@ -137,13 +137,13 @@ private func client(_ transport: any HTTPTransport) -> AtgeoClient {
         let server = try FakeServer(tilesets: [overture([tile("a")])])
         let client = client(HoldThenGarbage(base: server, held: tileURL("a")))
         let task = Task { try await client.searchNearby(region: sfRegion, dataset: "overturemaps.org", collection: "place") }
-        // A generous budget, as in ConcurrencyTests: on the iOS simulator the whole suite starts at once. The tile must
-        // be in flight before the cancel; cancelled earlier, the search never hands it to the transport and throws
-        // CancellationError instead.
+        // A generous budget, as in ConcurrencyTests: on the iOS simulator the whole suite starts at once. The tile should
+        // be in flight before the cancel, so that the search is cancelled while a transport holds it.
         let deadline = Date().addingTimeInterval(120)
         while !server.requestStrings.contains(tileURL("a")) && Date() < deadline { try await Task.sleep(nanoseconds: 1_000_000) }
-        try #require(server.requestStrings.contains(tileURL("a")))
+        // Cancelled first, so a failed require does not leave the search running on a held tile.
         task.cancel()
+        try #require(server.requestStrings.contains(tileURL("a")))
         switch await task.result {
         case .success(let r): Issue.record("expected an error, got a result with failures \(r.tileFailures)")
         // The transport ignored the cancel and returned 200; the search notices on its return (contract §11).
